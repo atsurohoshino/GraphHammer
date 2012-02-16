@@ -1,0 +1,9 @@
+STINGER
+-------
+
+STINGER stands for "Spatio-Temporal Spatio-Temporal
+Interaction Networks and Graphs (STING) Extensible Representation".
+
+This is a representation that allows for very fast analyses on Cray XMP.
+
+Our version does not depart in spirit, but depart in implementation.
