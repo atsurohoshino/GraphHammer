@@ -59,9 +59,9 @@ import Data.Array.IO
 import Data.Bits
 import Data.Int
 import Data.IORef
-import Data.List (intersperse)
+import Data.List (intersperse, sort)
 import Data.Maybe (fromMaybe, catMaybes)
-import qualified Data.Map as Map
+--import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Word
 import System.IO
@@ -79,7 +79,7 @@ import qualified STINGER.IntMap as IMap
 -- Allows one to work on graphs in parallel.
 
 analysisSliceSizeShift :: Int
-analysisSliceSizeShift = 20
+analysisSliceSizeShift = 8
 
 analysisSliceSize :: Int
 analysisSliceSize = 2^analysisSliceSizeShift
@@ -117,7 +117,7 @@ data STINGER msg as = STINGER {
 	, stingerAnalysesAffected	:: !(IntMap Int)
 	, stingerChannels		:: !(Array Int (TChan msg))
 	-- added per portion.
-	, stingerPortionEdges		:: !(IntMap EdgeSet)
+	, stingerPortionEdges		:: (Array Int EdgeSet)
 	-- increments for other nodes.
 	-- a map from node index to analysis increments.
 	, stingerOthersAnalyses		:: !(IntMap AnalysesMap)
@@ -143,29 +143,54 @@ stingerNew maxNodes nodeIndex chans = do
 		aArr <- stingerNewAnalysisSliceArray
 		return (ai,array (0,0) [(0,aArr)])
 	let result = STINGER maxNodes nodeIndex 0 IMap.empty analysisArrays
-			ISet.empty IMap.empty chans IMap.empty IMap.empty
+			ISet.empty IMap.empty chans (error "no portion edges!") IMap.empty
 	return (result `asTypeOf` forwardResult)
 	where
 
 stingerNewAnalysisSliceArray :: IO (IOUArray Int Int64)
 stingerNewAnalysisSliceArray = newArray (0,analysisSliceSize-1) 0
 
-stingerStartNewPortion :: STINGERM msg as ()
-stingerStartNewPortion = do
+stingerFillPortionEdges :: [(Index,Index)] -> STINGERM msg as ()
+stingerFillPortionEdges edges = do
+	nodeIndex <- liftM stingerNodeIndex get
+	maxNodes <- liftM stingerMaxNodes get
+	let len = length edges
+	let sets = scanl (update maxNodes nodeIndex) IMap.empty edges
+	let arr = listArray (0,len) sets
 	modify $! \st -> st {
-		  stingerPortionEdges = IMap.empty
+		  stingerPortionEdges = arr
 		, stingerOthersAnalyses = IMap.empty
 		}
+	where
+		update :: Int -> Int -> EdgeSet -> (Index,Index) -> EdgeSet
+		update maxNodes nodeIndex oldSet (fromI, toI)
+			| fromNode == nodeIndex && toNode == nodeIndex =
+				IMap.insertWith Set.union toIndex (Set.singleton fromI) $
+				IMap.insertWith Set.union fromIndex (Set.singleton toI) $
+				oldSet 
+			| fromNode == nodeIndex =
+				IMap.insertWith Set.union fromIndex (Set.singleton toI) $
+				oldSet 
+			| toNode == nodeIndex =
+				IMap.insertWith Set.union toIndex (Set.singleton fromI) $
+				oldSet 
+			| otherwise = oldSet
+			where
+				toInt2 (a,b) = (fromIntegral a, fromIntegral b)
+				(fromIndex,fromNode) = toInt2 $ fromI `divMod` fromIntegral maxNodes
+				(toIndex,toNode) = toInt2 $ toI `divMod` fromIntegral maxNodes
 
 stingerCommitNewPortion :: STINGERM msg as ()
 stingerCommitNewPortion = do
 	st <- get
-	let latestUpdates = fromMaybe IMap.empty $ fmap fst $ IMap.maxView $ stingerPortionEdges st
+	let portionEdges = stingerPortionEdges st
+	let (_,highest) = bounds portionEdges
+	let latestUpdates = portionEdges ! highest
 {-
 	liftIO $ putStrLn $ "Latest updates "++show latestUpdates
 ---}
 	put $! st {
-		  stingerPortionEdges = IMap.empty
+		  stingerPortionEdges = error "stingerPortionEdges accessed outside of transaction."
 		, stingerEdges = IMap.unionWith Set.union latestUpdates $ stingerEdges st
 		}
 
@@ -192,71 +217,15 @@ stingerEdgeExists edgeIndex start end
 ---}
 	return r
 
-stingerAddPortionEdge :: Int -> Index -> Index -> STINGERM msg as ()
-stingerAddPortionEdge edgeIndex start end
-	| start == end = return ()
-	| otherwise = do
-{-
-		thisNode <- liftM stingerNodeIndex get
-		liftIO $ putStrLn $ "Registering edge "++show (start,end) ++ "/"++show (end,start)++" at node "++show thisNode++" for edge index "++show edgeIndex
---		liftIO $ hFlush stdout
----}
-		startLocal <- stingerLocalIndex start
-		endLocal <- stingerLocalIndex end
-		startAsLocal <- stingerIndexToLocal start
-		endAsLocal <- stingerIndexToLocal end
-		st <- get
-		let (less,maybePrev,_) = IMap.splitLookup (edgeIndex-1) $ stingerPortionEdges st
-		let prevEdges = case maybePrev of
-			Just prev -> prev
-			Nothing -> case IMap.maxView less of
-				Nothing -> IMap.empty
-				Just (a,_) -> a
-		let edgesAfterStart
-			| startLocal = IMap.insertWith Set.union startAsLocal (Set.singleton end) prevEdges
-			| otherwise = prevEdges
-		let edgesAfterEnd
-			| endLocal = IMap.insertWith Set.union endAsLocal (Set.singleton start) edgesAfterStart
-			| otherwise = edgesAfterStart
-		let affectLocal isLocal index
-			| isLocal = ISet.singleton index
-			| otherwise = ISet.empty
-		let affected = ISet.union (affectLocal startLocal startAsLocal)
-			(affectLocal endLocal endAsLocal)
-{-
-		thisNode <- liftM stingerNodeIndex get
-		maxNodes <- liftM stingerMaxNodes get
-		let prettyLocalNodeEdgeSet (s,ts) = map (\t -> concat [show (s*maxNodes+thisNode)," -> ",show (t :: Index)]) $ Set.toList ts
-		let prettyEdgeSet lnes = concat $ intersperse ", " $ concatMap prettyLocalNodeEdgeSet $ IMap.toList lnes
-		liftIO $ putStrLn $ unlines [
-			  "This node "++show thisNode
-			, "Adding edge "++show (start,end)++" for portion index "++show edgeIndex
-			, "prevEdges "++prettyEdgeSet prevEdges
-			, "edgesAfterStart "++prettyEdgeSet edgesAfterStart
-			, "edgesAfterEnd "++prettyEdgeSet edgesAfterEnd
-			]
----}
-		let st' = st {
-			  stingerPortionEdges = IMap.insert edgeIndex edgesAfterEnd $ stingerPortionEdges st
-			, stingerNodesAffected = ISet.union affected $
-				stingerNodesAffected st
-			}
-		put st'
-
-
 stingerGetEdgeSet :: Int -> Index -> STINGERM msg as IndexSet
 stingerGetEdgeSet edgeInPortion vertex = do
 	index <- stingerIndexToLocal vertex
 	st <- get
 	let startEdges = IMap.findWithDefault Set.empty index $ stingerEdges st
-	let (less,maybePrev,_) = IMap.splitLookup (edgeInPortion-1) $ stingerPortionEdges st
-	let prevEdges = case maybePrev of
-		Just prev -> prev
-		Nothing -> case IMap.maxView less of
-			Nothing -> IMap.empty
-			Just (a,_) -> a
-	let portionEdges = IMap.findWithDefault Set.empty index prevEdges
-	return $ Set.union startEdges portionEdges
+	let portionEdges = stingerPortionEdges st
+	let prevEdges = portionEdges ! edgeInPortion
+	let resultEdges = IMap.findWithDefault Set.empty index prevEdges
+	return $ Set.union startEdges resultEdges
 
 stingerGetEdges :: Int -> Index -> STINGERM msg as [Index]
 stingerGetEdges edgeIndex vertex = do
@@ -419,19 +388,19 @@ stingerSendToNodeOfIndex index msg = do
 	stingerSendToNode nodeIndex msg 
 
 -- |Get analyses for no more than 100 affected vertices.
-stingerGetAffectedAnalyses :: STINGERM msg as (Map.Map Index VertexAnalyses)
+stingerGetAffectedAnalyses :: STINGERM msg as [(Index,VertexAnalyses)]
 stingerGetAffectedAnalyses = do
 	st <- get
 	let affected = take 100 $ ISet.toList $ stingerNodesAffected st
 	let nodeIndex = fromIntegral $ stingerNodeIndex st
 	let maxNodes = fromIntegral $ stingerMaxNodes st
 	let toGlobal i = fromIntegral i * maxNodes + nodeIndex
-	liftM Map.unions $ forM affected $ \localIndex -> do
+	forM affected $ \localIndex -> do
 		analyses <- liftM IMap.unions $ forM (assocs (stingerAnalyses st)) $ \(ai,analysisSlices) -> do
 			(sliceIndex, slice) <- stingerGetAnalysisArrayIndex ai localIndex
 			x <- liftIO $ readArray slice sliceIndex
 			return (IMap.singleton ai x)
-		return $ Map.singleton (toGlobal localIndex) analyses
+		return (toGlobal localIndex, analyses)
 
 stingerClearAffected :: STINGERM msg as ()
 stingerClearAffected = modify $! \st -> st { stingerNodesAffected = ISet.empty }
@@ -497,10 +466,10 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 			putStrLn $ "Analyses of affected indices:"
 			answer <- newChan
 			forM_ chans $ \ch -> atomically (writeTChan ch $ GetAffected answer)
-			allAffected <- flip (flip foldM Map.empty) chans $ \totalAffected _ -> do
+			allAffected <- flip (flip foldM []) chans $ \totalAffected _ -> do
 				someAffected <- readChan answer
-				return $ Map.union totalAffected someAffected
-			let firstSome = take 10 $ Map.toList allAffected
+				return $ totalAffected ++someAffected
+			let firstSome = take 10 $ sort allAffected
 			forM_ firstSome $ \(ix,analyses) -> do
 				putStrLn $ "    Index "++show ix
 				forM_ (IMap.toList analyses) $ \(ai,a) -> do
@@ -523,7 +492,7 @@ data Msg as =
 		Portion	Int (Array Int Index) (Chan ())
 	|	AtomicIncrement	Int AnalysesMap
 	|	ContinueIntersection (IntSt as)
-	|	GetAffected (Chan (Map.Map Index (IntMap Int64)))
+	|	GetAffected (Chan [(Index,IntMap Int64)])
 	|	Stop (Chan Int)
 
 
@@ -565,13 +534,13 @@ workerThread analysis maxNodes nodeIndex chans = do
 		case msg of
 			Portion pn edges answer -> do
 				liftIO $ putStrLn $ "Portion "++show pn++" @"++show nodeIndex
-				let es = zip [0..] $ pairs $ Data.Array.elems edges
-				stingerStartNewPortion
+				let es = pairs $ Data.Array.elems edges
+				stingerFillPortionEdges es
 				stingerClearAffected
 				let work n (i,(f,t)) = do
 					incr <- workOnEdge analysis i f t
 					return $! n + incr
-				count <- foldM work 0 es
+				count <- foldM work 0 $ zip [0..] es
 				liftIO $ putStrLn $ "Need to receive "++show count++" msgs @"++show nodeIndex
 				receiveLoop count
 				sendOtherIncrements pn
@@ -641,9 +610,6 @@ workOnEdge analysis edgeIndex fromVertex toVertex = do
 		-- should wait.
 		(_,_,False, False) -> return 1
 		(_,_,_, True) -> return 0
-	if isFromLocal || isToLocal
-		then stingerAddPortionEdge edgeIndex fromVertex toVertex
-		else return ()
 	return n
 
 insertAndAnalyzeSimpleSequential :: Analysis as' as -> [(Index, Index)] -> STINGERM msg as ()
