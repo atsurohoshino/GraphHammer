@@ -7,7 +7,7 @@ Name:                TriangleCountTest
 -- The package version. See the Haskell package versioning policy
 -- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
 -- standards guiding when and how versions should be incremented.
-Version:             0.2
+Version:             0.3
 
 -- A short (one-line) description of the package.
 Synopsis:            Test harness for TriangleCount analysis.
@@ -55,8 +55,8 @@ Executable TriangleCountTest
                        containers >= 0.3,
                        mtl >= 1.1,
                        array >= 0.3,
-                       Graph500 >= 0.2,
-                       STINGER >= 0.2
+                       Graph500 >= 0.3,
+                       STINGER >= 0.3
   
   -- Modules not exported by this package.
   -- Other-modules:       

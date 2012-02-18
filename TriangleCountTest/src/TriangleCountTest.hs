@@ -33,28 +33,16 @@ import OneToOneGraphGenerator
 -------------------------------------------------------------------------------
 -- Generating test data.
 
-data GraphType = G500 String | Rectangle Int Int | OneToOne Int
-	deriving (Eq, Show)
-
-testDataReading :: GraphType -> Int -> IO (IO (Maybe (Array Int Index)))
-testDataReading gtype batchSize = case gtype of
-	G500 fname -> do
-		h <- openBinaryFile fname ReadMode
-		-- two vertices per edge, 8 bytes per Int64. !!! HACK !!!
-		buf <- newArray (0,bytesCount-1) 0
-		return $ graph500Reader h buf
-	Rectangle w h -> simpleGraphGen ("rectangle regular graph "++show w++"x"++show h) $ regularRectangleGraph h w
-	OneToOne count -> simpleGraphGen ("one-to-one graph, "++show count++"-gon") $ oneToOneGraph True count
+testDataReading :: String -> Int -> IO (IO (Maybe (Array Int Index)))
+testDataReading fname batchSize = do
+	h <- openBinaryFile fname ReadMode
+	-- two vertices per edge, 8 bytes per Int64. !!! HACK !!!
+	buf <- newArray (0,bytesCount-1) 0
+	return $ graph500Reader h buf
 	where
 		vertexSize = 8
 		edgeSize = 2*vertexSize
 		bytesCount = edgeSize*batchSize
-		simpleGraphGen msg edges = do
-			putStrLn msg
-			let edgeArrays = edgesToArrays edges
-			--mapM_ print edgeArrays
-			ref <- newIORef edgeArrays
-			return $ gen ref
 		edgesToArrays [] = []
 		edgesToArrays xs = frontEdgesArray : edgesToArrays rest
 			where
@@ -89,50 +77,6 @@ testDataReading gtype batchSize = case gtype of
 			return $ Just pairs
 
 -------------------------------------------------------------------------------
--- Generate and write a Graph500 data in a format that testDataReading understands.
-
-generateWriteGraph500Data :: String -> Int -> Int -> IO ()
-generateWriteGraph500Data fname scale edgeFactor = do
-	when (edgeFactor /= 16) $ putStrLn "It is preferable for edgeFactor to be 16."
-	(start,end) <- G500.generate scale edgeFactor
-	buffer <- mkBuffer
-	h <- openBinaryFile fname WriteMode
-	write h 0 buffer start end
-	hClose h
-	where
-		verticesExpected :: Index
-		verticesExpected = shiftL 1 scale
-		totalEdgesExpected :: Index
-		totalEdgesExpected = verticesExpected * fromIntegral edgeFactor
-		bufferPairs = min verticesExpected 8192
-		bufferIndices = bufferPairs*2
-		bufferBytes = fromIntegral (8*bufferIndices)
-
-		mkBuffer :: IO (IOUArray Int Word8)
-		mkBuffer = newArray (0,bufferBytes-1) 0
-
-		write h start buffer edgeStart edgeEnd = do
-			(_,top) <- getBounds edgeStart
-			if start > top then return ()
-				else do
-					fill start buffer edgeStart edgeEnd
-					-- !!! HACK !!!
-					-- Int64 is not a Storable instance.
-					hPutArray h buffer (8*fromIntegral bufferIndices)
-					write h (start+bufferPairs) buffer edgeStart edgeEnd
-		fill start buffer edgeStart edgeEnd = do
-			forM_ [0..bufferPairs-1] $ \i -> do
-				s <- readArray edgeStart (start + i)
-				e <- readArray edgeEnd (start + i)
-				writeIndexAsBytes buffer (fromIntegral i*2  ) s
-				writeIndexAsBytes buffer (fromIntegral i*2+1) e
-		writeIndexAsBytes :: IOUArray Int Word8 -> Int -> Index -> IO ()
-		writeIndexAsBytes arr i ix = do
-			forM_ [0..7] $ \s -> do
-				writeArray arr (i*8 + s) (fromIntegral $ shiftR ix (s*8))
-			
-
--------------------------------------------------------------------------------
 -- Reading the arguments.
 
 data STINGERArgs = SArgs {
@@ -141,17 +85,14 @@ data STINGERArgs = SArgs {
 	, saProcesses		:: Int
 	}
 
-readArguments :: IO (Either (String, Int, Int) (GraphType, STINGERArgs))
+readArguments :: IO (String, STINGERArgs)
 readArguments = do
 	args <- getArgs
 	putStrLn $ "Arguments: "++show args
 	case runStateT parseArgs args of
 		Nothing -> do
 			putStrLn $ unlines [
-				  "usage: TriangleCountTest -gen-graph500 -fname=<filename> -scale=<scale> [-edgeFactor=<edge factor>]"
-				, "    or TriangleCountTest -graph500 -fname=<filename> [stinger arguments]"
-				, "    or TriangleCountTest -rectangle -width=<width> [-height=<height>] [stinger arguments]"
-				, "    or TriangleCountTest -one-to-one -count=<vertex count> [stinger arguments]"
+				  "usage: TriangleCountTest -fname=<filename> [stinger arguments]"
 				, "STINGER arguments are:"
 				, "    -batch=<batch size>, default 1000"
 				, "    -nodes=<nodes count>, default 1"
@@ -177,37 +118,18 @@ intOpt opt = do
 		[(i,"")] -> return i
 		_ -> mzero
 intDefOpt def opt = intOpt opt `mplus` return def
-g500 = do
-	matchOpt "graph500"
-	liftM G500 filenameOpt
-rectangle = do
-	matchOpt "rectangle"
-	w <- intOpt "width"
-	h <- intDefOpt w "height"
-	return $ Rectangle w h
-
-oneToOne = do
-	matchOpt "one-to-one"
-	liftM OneToOne $ intOpt "count"
 
 speedMeasurementArgs = do
-	gtype <- g500 `mplus` rectangle `mplus` oneToOne
 	sa <- stingerArgs
 	[] <- get
-	return (gtype, sa)
+	return sa
 
 filenameOpt = do
 	Just fn <- matchOpt "fname"
 	return fn
 
-g500GenArgs = do
-	matchOpt "gen-graph500"
-	fn <- filenameOpt
-	scale <- intOpt "scale"
-	edgeFactor <- intDefOpt 16 "edgeFactor"
-	return (fn, scale, edgeFactor)
-
-parseArgs = liftM Right speedMeasurementArgs `mplus` liftM Left g500GenArgs
+parseArgs = do
+	liftM2 (,) filenameOpt speedMeasurementArgs
 
 stingerArgs = do
 	parseOpts $ SArgs 1000 1 1
@@ -230,12 +152,8 @@ stingerArgs = do
 -- Running the test.
 
 main = do
-	operation <- readArguments
-	case operation of
-		Right (graphType, stingerArgs) -> do
-			gen <- testDataReading graphType (saBatchSize stingerArgs)
-			let maxNodes = saNodes stingerArgs
-			runAnalysesStack maxNodes gen triangleCount
-		Left (fn, scale, edgeFactor) -> do
-			generateWriteGraph500Data fn scale edgeFactor
+	(fn, stingerArgs) <- readArguments
+	gen <- testDataReading fn (saBatchSize stingerArgs)
+	let maxNodes = saNodes stingerArgs
+	runAnalysesStack maxNodes gen triangleCount
 
