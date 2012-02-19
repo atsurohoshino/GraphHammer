@@ -89,6 +89,7 @@ analysisSliceSizeMask = analysisSliceSize - 1
 
 type IntMap a = IMap.IntMap a 
 type IntSet = ISet.IntSet
+
 type IndexSet = Set.Set Index
 
 type VertexAnalyses = IntMap Int64
@@ -101,7 +102,7 @@ type AnalysesMap = IntMap VertexAnalyses
 -- Expect it to be about 2^12 or less.
 type AnalysesArrays = Array Int (Array Int (IOUArray Int Int64))
 
-type EdgeSet = IntMap IndexSet
+type EdgeSet = IntMap VertexSet
 
 -- |A representation parametrized by analyses required.
 data STINGER msg as = STINGER {
@@ -126,6 +127,44 @@ data STINGER msg as = STINGER {
 -- |Monad to operate with STINGER.
 type STINGERM msg as a = StateT (STINGER msg as) IO a
 
+
+-------------------------------------------------------------------------------
+-- Working with vertex sets.
+
+data Vertex = Vertex { vertexNode, vertexIndex :: !Int }
+	deriving (Eq, Ord, Show)
+
+-- vertex set is a map from node to a set of local indices.
+type VertexSet = IntMap IntSet
+
+vertexSetEmpty = IMap.empty
+
+vertexSetIntersection a b = IMap.filter (not . ISet.null) $
+	IMap.intersectionWith (ISet.intersection) a b
+
+vertexSetUnion a b = IMap.unionWith (ISet.union) a b
+
+vertexSetToList :: VertexSet -> [Vertex]
+vertexSetToList set = concatMap (\(n,iset) -> map (Vertex n) $ ISet.toList iset) $
+	IMap.toList set
+
+vertexToIndex maxNodes vertex = fromIntegral (vertexNode vertex) +
+	fromIntegral maxNodes * fromIntegral (vertexIndex vertex)
+
+indexToVertex maxNodes index = Vertex (fromIntegral nodeIndex) (fromIntegral localIndex)
+	where
+		(localIndex,nodeIndex) = divMod index (fromIntegral maxNodes)
+
+vertexSetMember :: Vertex -> VertexSet -> Bool
+vertexSetMember vertex set = case IMap.lookup (vertexNode vertex) set of
+	Just set -> ISet.member (vertexIndex vertex) set
+	Nothing -> False
+
+vertexSetInsert :: Vertex -> VertexSet -> VertexSet
+vertexSetInsert (Vertex node index) vset = IMap.insertWith ISet.union node (ISet.singleton index) vset
+
+vertexSetSingleton :: Vertex -> VertexSet
+vertexSetSingleton (Vertex node index) = IMap.singleton node (ISet.singleton index)
 
 -------------------------------------------------------------------------------
 -- Main STINGER API.
@@ -164,21 +203,18 @@ stingerFillPortionEdges edges = do
 	where
 		update :: Int -> Int -> EdgeSet -> (Index,Index) -> EdgeSet
 		update maxNodes nodeIndex oldSet (fromI, toI)
-			| fromNode == nodeIndex && toNode == nodeIndex =
-				IMap.insertWith Set.union toIndex (Set.singleton fromI) $
-				IMap.insertWith Set.union fromIndex (Set.singleton toI) $
+			| vertexNode fromV == nodeIndex && vertexNode toV == nodeIndex =
+				IMap.insertWith vertexSetUnion (vertexIndex fromV) (vertexSetSingleton toV) $
+				IMap.insertWith vertexSetUnion (vertexIndex toV) (vertexSetSingleton fromV) $
 				oldSet 
-			| fromNode == nodeIndex =
-				IMap.insertWith Set.union fromIndex (Set.singleton toI) $
-				oldSet 
-			| toNode == nodeIndex =
-				IMap.insertWith Set.union toIndex (Set.singleton fromI) $
-				oldSet 
+			| vertexNode fromV == nodeIndex  =
+				IMap.insertWith vertexSetUnion (vertexIndex fromV) (vertexSetSingleton toV) oldSet
+			| vertexNode toV == nodeIndex =
+				IMap.insertWith vertexSetUnion (vertexIndex toV) (vertexSetSingleton fromV) oldSet
 			| otherwise = oldSet
 			where
-				toInt2 (a,b) = (fromIntegral a, fromIntegral b)
-				(fromIndex,fromNode) = toInt2 $ fromI `divMod` fromIntegral maxNodes
-				(toIndex,toNode) = toInt2 $ toI `divMod` fromIntegral maxNodes
+				fromV = indexToVertex maxNodes fromI
+				toV = indexToVertex maxNodes toI
 
 stingerCommitNewPortion :: STINGERM msg as ()
 stingerCommitNewPortion = do
@@ -191,21 +227,32 @@ stingerCommitNewPortion = do
 ---}
 	put $! st {
 		  stingerPortionEdges = error "stingerPortionEdges accessed outside of transaction."
-		, stingerEdges = IMap.unionWith Set.union latestUpdates $ stingerEdges st
+		, stingerEdges = IMap.unionWith vertexSetUnion latestUpdates $ stingerEdges st
 		}
 
-stingerEdgeExists :: Int -> Index -> Index -> STINGERM msg as Bool
+stingerSplitIndex :: Index -> STINGERM msg as Vertex
+stingerSplitIndex index = do
+	maxNodes <- liftM stingerMaxNodes get
+	return $ indexToVertex maxNodes index
+
+stingerVertexSetIntersectionAsIndices :: VertexSet -> VertexSet -> STINGERM msg as [Index]
+stingerVertexSetIntersectionAsIndices s1 s2 = do
+	maxNodes <- liftM stingerMaxNodes get
+	let isection = vertexSetIntersection s1 s2
+	return $ map (vertexToIndex maxNodes) $ vertexSetToList isection
+
+stingerEdgeExists :: Int -> Vertex -> Vertex -> STINGERM msg as Bool
 stingerEdgeExists edgeIndex start end
 	| start == end = return True
 	| otherwise = do
-	startIsLocal <- stingerLocalIndex start
+	startIsLocal <- stingerLocalVertex start
 	r <- if startIsLocal
 		then do
 			es <- stingerGetEdgeSet edgeIndex start
-			return $ Set.member end es
+			return $ vertexSetMember end es
 		else do
 			es <- stingerGetEdgeSet edgeIndex end
-			return $ Set.member start es
+			return $ vertexSetMember start es
 {-
 	thisNode <- liftM stingerNodeIndex get
 	let text = unlines [
@@ -217,19 +264,19 @@ stingerEdgeExists edgeIndex start end
 ---}
 	return r
 
-stingerGetEdgeSet :: Int -> Index -> STINGERM msg as IndexSet
+stingerGetEdgeSet :: Int -> Vertex -> STINGERM msg as VertexSet
 stingerGetEdgeSet edgeInPortion vertex = do
-	index <- stingerIndexToLocal vertex
+	let localIndex = vertexIndex vertex
 	st <- get
-	let startEdges = IMap.findWithDefault Set.empty index $ stingerEdges st
+	let startEdges = IMap.findWithDefault IMap.empty localIndex $ stingerEdges st
 	let portionEdges = stingerPortionEdges st
 	let prevEdges = portionEdges ! edgeInPortion
-	let resultEdges = IMap.findWithDefault Set.empty index prevEdges
-	return $ Set.union startEdges resultEdges
+	let resultEdges = IMap.findWithDefault vertexSetEmpty localIndex prevEdges
+	return $ IMap.unionWith ISet.union startEdges resultEdges
 
-stingerGetEdges :: Int -> Index -> STINGERM msg as [Index]
-stingerGetEdges edgeIndex vertex = do
-	liftM Set.toList $ stingerGetEdgeSet edgeIndex vertex
+--stingerGetEdges :: Int -> Index -> STINGERM msg as [Index]
+--stingerGetEdges edgeIndex vertex = do
+--	liftM Set.toList $ stingerGetEdgeSet edgeIndex vertex
 
 stingerGrowAnalysisArrays :: Int -> STINGERM msg as ()
 stingerGrowAnalysisArrays newMaxIndex = do
@@ -333,6 +380,10 @@ stingerLocalIndex index = do
 	nodeIndex <- stingerIndexToNodeIndex index
 	liftM (nodeIndex ==) stingerCurrentNodeIndex
 
+stingerLocalVertex :: Vertex -> STINGERM msg as Bool
+stingerLocalVertex vertex = do
+	liftM (vertexNode vertex ==) stingerCurrentNodeIndex
+
 -- |Compute "local job" flag from two vertices.
 -- Properties:
 --   1. local job for (v1,v2) at n1 == not (local job for (v1,v2) at n2)
@@ -341,12 +392,12 @@ stingerLocalIndex index = do
 --   2. local job for (v1,v2) == local job for (v2,v1)
 -- It is possible for those properties to do not hold for completely
 -- local or completely external pair.
-stingerLocalJob :: Index -> Index -> STINGERM msg as Bool
+stingerLocalJob :: Vertex -> Vertex -> STINGERM msg as Bool
 stingerLocalJob v1' v2' = do
-	n1 <- stingerIndexToNodeIndex v1
-	n2 <- stingerIndexToNodeIndex v2
-	let randomDir = ((v1 `xor` v2) .&. 1) == 0
-	v1Local <- stingerLocalIndex v1
+	let n1 = vertexNode v1
+	let n2 = vertexNode v2
+	let randomDir = ((vertexIndex v1 `xor` vertexIndex v2) .&. 1) == 0
+	v1Local <- stingerLocalVertex v1
 	return $ (randomDir && not v1Local) || (not randomDir && v1Local)
 	where
 		-- order indices to support property 2.
@@ -382,10 +433,9 @@ stingerSendToNode nodeIndex msg = do
 	nodeChan <- liftM ((!nodeIndex) . stingerChannels) get
 	liftIO $ atomically $ writeTChan nodeChan msg
 
-stingerSendToNodeOfIndex :: Index -> msg -> STINGERM msg as ()
-stingerSendToNodeOfIndex index msg = do
-	nodeIndex <- stingerIndexToNodeIndex index
-	stingerSendToNode nodeIndex msg 
+stingerSendToNodeOfVertex :: Vertex -> msg -> STINGERM msg as ()
+stingerSendToNodeOfVertex vertex msg = do
+	stingerSendToNode (vertexNode vertex) msg 
 
 -- |Get analyses for no more than 100 affected vertices.
 stingerGetAffectedAnalyses :: STINGERM msg as [(Index,VertexAnalyses)]
@@ -404,6 +454,9 @@ stingerGetAffectedAnalyses = do
 
 stingerClearAffected :: STINGERM msg as ()
 stingerClearAffected = modify $! \st -> st { stingerNodesAffected = ISet.empty }
+
+-------------------------------------------------------------------------------
+-- Code that runs the analytics.
 
 -- |Run the analyses stack.
 -- Its' parameters:
@@ -575,10 +628,12 @@ sendOtherIncrements pn = do
 		stingerSendToNode node (AtomicIncrement pn incrs)
 
 workOnEdge :: Analysis as as -> Int -> Index -> Index -> STINGERM (Msg as) as Int
-workOnEdge analysis edgeIndex fromVertex toVertex = do
+workOnEdge analysis edgeIndex fromIndex toIndex = do
+	fromVertex <- stingerSplitIndex fromIndex
+	toVertex <- stingerSplitIndex toIndex
 	exists <- stingerEdgeExists edgeIndex fromVertex toVertex
-	isFromLocal <- stingerLocalIndex fromVertex
-	isToLocal <- stingerLocalIndex toVertex
+	isFromLocal <- stingerLocalVertex fromVertex
+	isToLocal <- stingerLocalVertex toVertex
 	localStart <- stingerLocalJob fromVertex toVertex
 {-
 	thisNode <- stingerCurrentNodeIndex
@@ -599,12 +654,12 @@ workOnEdge analysis edgeIndex fromVertex toVertex = do
 		(False, False, _, _) -> return 0
 		-- totally internal, wouldn't send or receive.
 		(True,True, _, False) -> do
-			runStack analysis edgeIndex fromVertex toVertex
+			runStack analysis edgeIndex fromIndex toIndex
 			return 0
 		-- partially internal and started at our node.
 		-- it sends a message and shouldn't wait.
 		(_,_,True, False) -> do
-			runStack analysis edgeIndex fromVertex toVertex
+			runStack analysis edgeIndex fromIndex toIndex
 			return 0
 		-- partially internal and started outside.
 		-- should wait.
@@ -661,7 +716,7 @@ data AnStatement as where
 	ASSetAnalysisResult :: Int -> Value _a Index -> Value _b Int64 -> AnStatement as
 	ASFlagVertex :: Value _a Index -> AnStatement as
 	ASOnFlaggedVertices :: Value Asgn Index -> AnStatList as -> AnStatement as
-	ASContinueEdgeIsect :: IndexSet -> Value Asgn Index -> Value Asgn Index -> Index -> AnStatList as -> AnStatement as
+	ASContinueEdgeIsect :: VertexSet -> Value Asgn Index -> Value Asgn Index -> Vertex -> AnStatList as -> AnStatement as
 
 indentShow = indent . show
 indent = ("    "++)
@@ -910,7 +965,7 @@ interpretStatement stat = case stat of
 	ASContinueEdgeIsect edgeSet a b thisNodeVertex onEdgeStats -> do
 		ei <- liftM isEdgeIndex get
 		thisEdgeSet <- lift $ stingerGetEdgeSet ei thisNodeVertex
-		let isection = Set.toList $ Set.intersection edgeSet thisEdgeSet
+		isection <- lift $ stingerVertexSetIntersectionAsIndices edgeSet thisEdgeSet
 {-
 		thisNode <- lift stingerCurrentNodeIndex
 		liftIO $ putStrLn $ "thisNode "++show thisNode++", ei "++show ei++", edgeSet "++show edgeSet++", thisEdgeSet "++show thisEdgeSet++", isection "++show isection
@@ -935,10 +990,10 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 	, Just i4 <- uncomposeLocal b
 	, (i1 == i3 && i2 == i4) || (i1 == i4 && i2 == i3) = do
 	ei <- liftM isEdgeIndex get
-	s1 <- interpretValue startVertex1
-	s2 <- interpretValue startVertex2
-	l1 <- lift $ stingerLocalIndex s1
-	l2 <- lift $ stingerLocalIndex s2
+	s1 <- interpretVertexValue startVertex1
+	s2 <- interpretVertexValue startVertex2
+	l1 <- lift $ stingerLocalVertex s1
+	l2 <- lift $ stingerLocalVertex s2
 	case (l1,l2) of
 		(False, False) -> error "completely non-local computation!"
 		(True,True) -> do
@@ -947,7 +1002,7 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 			let cont c = ASAssign vertexToAssign1 (cst c) :
 				ASAssign vertexToAssign2 (cst c) :
 				thenStats
-			let isection = Set.toList $ Set.intersection e1 e2
+			isection <- lift $ stingerVertexSetIntersectionAsIndices e1 e2
 {-
 			thisNode <- lift stingerCurrentNodeIndex
 			liftIO $ putStrLn $ "edge "++show (s1,s2)++", isection "++show isection++", e1 "++show e1++", e2 "++show e2
@@ -970,7 +1025,7 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 			st <- get
 			let continueStat = ASContinueEdgeIsect ourEdges vertexToAssign1 vertexToAssign2 destIndex thenStats
 			let sendSt = st { isConts = [continueStat] : isConts st }
-			lift $ stingerSendToNodeOfIndex destIndex $ ContinueIntersection sendSt
+			lift $ stingerSendToNodeOfVertex destIndex $ ContinueIntersection sendSt
 			-- stop interpreting here. It will be continued on another node.
 			modify $ \st -> st { isConts = [] }
 {-
@@ -1013,6 +1068,10 @@ interpretValue value = case value of
 		interpretBin :: (a -> b -> r) -> Value _a a -> Value _b b -> AIM as r
 		interpretBin f a b = liftM2 f (interpretValue a) (interpretValue b)
 
+interpretVertexValue :: Value _a Index -> AIM as Vertex
+interpretVertexValue value = do
+	i <- interpretValue value
+	lift $ stingerSplitIndex i
 
 -------------------------------------------------------------------------------
 -- STINGER analysis combination.

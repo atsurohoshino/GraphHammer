@@ -5,7 +5,7 @@
 
 {-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
-{-# LANGUAGE IncoherentInstances #-}
+{-# LANGUAGE IncoherentInstances, PatternGuards #-}
 
 module STINGER.Simplest(
 	  Index	-- from G500.
