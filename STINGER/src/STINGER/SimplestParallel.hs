@@ -73,6 +73,7 @@ import STINGER.HList
 import qualified STINGER.IntSet as ISet
 import qualified STINGER.IntMap as IMap
 
+import Debug.Trace
 
 -------------------------------------------------------------------------------
 -- A (already not) very simple representation.
@@ -94,6 +95,7 @@ type IndexSet = Set.Set Index
 
 type VertexAnalyses = IntMap Int64
 type AnalysesMap = IntMap VertexAnalyses
+type OtherAnalyses = IntMap AnalysesMap
 
 -- First is analysis index, then vertex' local index shifted right by analysisSliceSizeShift
 -- and the lat one is vertex' local index modulo analysisSliceSize.
@@ -121,7 +123,7 @@ data STINGER msg as = STINGER {
 	, stingerPortionEdges		:: (Array Int EdgeSet)
 	-- increments for other nodes.
 	-- a map from node index to analysis increments.
-	, stingerOthersAnalyses		:: !(IntMap AnalysesMap)
+	, stingerOthersAnalyses		:: !OtherAnalyses
 	}
 
 -- |Monad to operate with STINGER.
@@ -165,6 +167,9 @@ vertexSetInsert (Vertex node index) vset = IMap.insertWith ISet.union node (ISet
 
 vertexSetSingleton :: Vertex -> VertexSet
 vertexSetSingleton (Vertex node index) = IMap.singleton node (ISet.singleton index)
+
+vertexSetSize :: VertexSet -> Int
+vertexSetSize set = IMap.fold (+) 0 $ IMap.map ISet.size set
 
 -------------------------------------------------------------------------------
 -- Main STINGER API.
@@ -234,6 +239,9 @@ stingerSplitIndex :: Index -> STINGERM msg as Vertex
 stingerSplitIndex index = do
 	maxNodes <- liftM stingerMaxNodes get
 	return $ indexToVertex maxNodes index
+
+stingerVertexSetIntersection :: VertexSet -> VertexSet -> STINGERM msg as VertexSet
+stingerVertexSetIntersection s1 s2 = return $ vertexSetIntersection s1 s2
 
 stingerVertexSetIntersectionAsIndices :: VertexSet -> VertexSet -> STINGERM msg as [Index]
 stingerVertexSetIntersectionAsIndices s1 s2 = do
@@ -357,6 +365,37 @@ stingerIncrementAnalysis analysisIndex index incr = do
 			let postponedList = unlines $ concatMap (\(n,incrs) -> prettyNodeIncrs n incrs) $ IMap.toList postponed
 			liftIO $ putStrLn $ mainMsg ++"\n"++ postponedList
 ---}
+
+stingerBulkIncrementAnalysis :: Int -> VertexSet -> Int64 -> STINGERM msg as ()
+stingerBulkIncrementAnalysis analysisIndex vertices 0 = return ()
+stingerBulkIncrementAnalysis analysisIndex vertices incr = do
+	thisNode <- liftM stingerNodeIndex get
+	let (left,ours,right) = IMap.splitLookup thisNode vertices
+	case ours of
+		-- perform increments for local analyses.
+		Just vertices -> do
+			forM_ (ISet.toList vertices) $ \localIndex -> do
+				(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex analysisIndex localIndex
+				liftIO $ do
+					x <- readArray sliceArray sliceIndex
+					writeArray sliceArray sliceIndex (x + incr)
+			modify $! \st -> st {
+				  stingerNodesAffected = ISet.union vertices $ stingerNodesAffected st
+				}
+		Nothing -> return ()
+	-- join all other analyses.
+--	liftIO $ putStrLn $ "ours: "++show ours
+--	liftIO $ putStrLn $ "left, right: "++show (left, right)
+	let joinAnalyses :: VertexSet -> OtherAnalyses -> OtherAnalyses
+            joinAnalyses new old = IMap.unionWith
+			(IMap.unionWith (IMap.unionWith (+)))
+			(IMap.map (flip IMap.mapFromSetValue $ IMap.singleton analysisIndex incr) new)
+			old
+	modify $! \st -> st {
+		  stingerOthersAnalyses = joinAnalyses left $ joinAnalyses right $
+			stingerOthersAnalyses st
+		}
+	return ()
 
 stingerGetOtherAnalyses :: STINGERM msg as [(Int,AnalysesMap)]
 stingerGetOtherAnalyses = do
@@ -596,7 +635,9 @@ workerThread analysis maxNodes nodeIndex chans = do
 				count <- foldM work 0 $ zip [0..] es
 				liftIO $ putStrLn $ "Need to receive "++show count++" msgs @"++show nodeIndex
 				receiveLoop count
+				liftIO $ putStrLn $ "Sending others' increments."
 				sendOtherIncrements pn
+				liftIO $ putStrLn $ "Committing portion."
 				stingerCommitNewPortion
 				liftIO $ putStrLn $ "Sending answer."
 				liftIO $ writeChan answer ()
@@ -624,6 +665,7 @@ workerThread analysis maxNodes nodeIndex chans = do
 sendOtherIncrements :: Int -> STINGERM (Msg as) as ()
 sendOtherIncrements pn = do
 	increments <- stingerGetOtherAnalyses
+	liftIO $ putStrLn $ "Others increments: "++show increments
 	forM_ increments $ \(node,incrs) -> 
 		stingerSendToNode node (AtomicIncrement pn incrs)
 
@@ -672,19 +714,16 @@ insertAndAnalyzeSimpleSequential stack edges =
 	error "insertAndAnalyzeSimpleSequential!!!"
 
 runStack :: Analysis as as -> Int -> Index -> Index -> STINGERM (Msg as) as ()
-runStack (Analysis action) i start end = do
+runStack (Analysis startV endV _ action) i start end = do
 --	liftIO $ putStrLn $ "statements to interpret:"
---	liftIO $ putStrLn $ show (map snd actionStatements)
+--	liftIO $ putStrLn $ show actionStatements
 	interpret (interpretInitialEnv i actionStatements)
 	where
-		actionStatements = asStatements $ flip execState (AnSt 0 0 []) $ do
-			s <- localValue start
-			e <- localValue end
-			action (ValueComposed s) (ValueComposed e)
+		actionStatements = ASAssign startV (cst start) : ASAssign endV (cst end) : action
 
 -- |Is analyses stack parallelizable with our method?..
 analysesParallelizable :: Analysis as' as -> Bool
-analysesParallelizable (Analysis actions) = True
+analysesParallelizable (Analysis _ _ _ actions) = True
 
 -------------------------------------------------------------------------------
 -- Analysis construction monad.
@@ -705,17 +744,24 @@ instance Storable Int64 where
 	toInt64 = id
 	fromInt64 = id
 
+data BulkOp as where
+	BulkIncr :: Int -> Value _a Index -> Value _b Index -> Value _c Int64 -> BulkOp as
+	CountIncr :: (Num a, Storable a) => Value Asgn a -> Value _c a -> BulkOp as
+	
+
 data AnStatement as where
 	-- destination and value
 	ASAssign :: (Show a, Storable a) => Value Asgn a -> Value _a a -> AnStatement as
 	-- start vertex for edges, end vertex for edges (will be assigned in run-time),
 	-- statements to perform.
 	ASOnEdges :: Value _a Index -> Value Asgn Index -> AnStatList as -> AnStatement as
+	ASOnEdgesIntersection :: Value _a Index -> Value _b Index -> Value Asgn Index -> Value Asgn Index -> AnStatList as -> AnStatement as
 	ASAtomicIncr :: Int -> Value _a Index -> Value _b Int64 -> AnStatement as
 	ASIf :: Value _a Bool -> AnStatList as -> AnStatList as -> AnStatement as
 	ASSetAnalysisResult :: Int -> Value _a Index -> Value _b Int64 -> AnStatement as
 	ASFlagVertex :: Value _a Index -> AnStatement as
 	ASOnFlaggedVertices :: Value Asgn Index -> AnStatList as -> AnStatement as
+	ASIntersectionBulkOps :: Value _a Index -> Value _b Index -> [BulkOp as] -> AnStatement as
 	ASContinueEdgeIsect :: VertexSet -> Value Asgn Index -> Value Asgn Index -> Vertex -> AnStatList as -> AnStatement as
 
 indentShow = indent . show
@@ -725,6 +771,8 @@ instance Show (AnStatement as) where
 	show (ASAssign dest what) = show dest ++ " := "++show what
 	show (ASOnEdges vertex var stats) = unlines $
 		("onEdges "++show vertex++"\\"++show var) : indentShowStats stats
+	show (ASOnEdgesIntersection a b aN bN stats) = unlines $
+		("onEdgesIntersection "++show (a,b)++"\\"++show (aN,bN)) : indentShowStats stats
 	show (ASAtomicIncr ai index incr) = "analysisResult["++show ai++"]["++show index++"] += "++show incr
 	show (ASIf cond thens elses) = unlines $
 			("if "++show cond) : "then" : indentShowStats thens ++ ("else" : map indentShow elses)
@@ -737,7 +785,6 @@ type AnStatList as = [AnStatement as]
 
 data AnSt as = AnSt {
 	  asValueIndex		:: !Int
-	, asStatIndex		:: !Int
 	, asStatements		:: !(AnStatList as)
 	}
 
@@ -746,8 +793,7 @@ type AnM as a = State (AnSt as) a
 
 addStatement :: AnStatement as -> AnM as ()
 addStatement stat = modify $! \as -> as {
-	  asStatIndex = asStatIndex as + 1
-	, asStatements = asStatements as ++ [stat]
+	  asStatements = asStatements as ++ [stat]
 	}
 
 cutStatements :: AnM as r -> AnM as (AnStatList as, r)
@@ -918,7 +964,7 @@ dest $= expr = addStatement $ ASAssign dest expr
 data IntSt as = IntSt {
 	  istLocals	:: !(IntMap Int64)
 	, isEdgeIndex	:: !Int
-	, isConts	:: [AnStatList as]
+	, isConts	:: ![AnStatList as]
 	}
 
 type AIM as a = StateT (IntSt as) (StateT (STINGER (Msg as) as) IO) a
@@ -973,6 +1019,10 @@ interpretStatement stat = case stat of
 		let cont c = ASAssign a (cst c) : ASAssign b (cst c) :
 			onEdgeStats
 		modify $! \st -> st { isConts = map cont isection ++ isConts st }
+	ASOnEdgesIntersection av bv aN bN stats -> do
+		interpretEdgesIntersection av bv aN bN stats
+	ASIntersectionBulkOps av bv bulkStats ->
+		interpretIntersectionBulkOps av bv bulkStats
 
 assignValue :: Show v => Value Asgn v -> Value _b v -> AIM as ()
 assignValue (ValueLocal index) what = do
@@ -980,18 +1030,39 @@ assignValue (ValueLocal index) what = do
 	x <- interpretValue what
 	modify $! \ist -> ist { istLocals = IMap.insert index (toInt64 x) $ istLocals ist }
 
-
-interpretOnEdges :: EnabledAnalyses as as => Value _a Index -> Value Asgn Index -> AnStatList as -> AIM as ()
-
--- special case for edge sets intersection.
-interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
-	[ASOnEdges startVertex2 vertexToAssign2@(ValueLocal i2) [ASIf (ValueBin Equal a b) thenStats []]]
-	| Just i3 <- uncomposeLocal a
-	, Just i4 <- uncomposeLocal b
-	, (i1 == i3 && i2 == i4) || (i1 == i4 && i2 == i3) = do
+interpretIntersectionBulkOps :: Value _a Index -> Value _b Index -> [BulkOp as] -> AIM as ()
+interpretIntersectionBulkOps a b ops = do
 	ei <- liftM isEdgeIndex get
-	s1 <- interpretVertexValue startVertex1
-	s2 <- interpretVertexValue startVertex2
+	s1 <- interpretVertexValue a
+	s2 <- interpretVertexValue b
+	l1 <- lift $ stingerLocalVertex s1
+	l2 <- lift $ stingerLocalVertex s1
+	case (l1,l2) of
+		(False, False) -> error "completely non-local computation!"
+		(True, True) -> do
+			e1 <- lift $ stingerGetEdgeSet ei s1
+			e2 <- lift $ stingerGetEdgeSet ei s2
+			isection <- lift $ stingerVertexSetIntersection e1 e2
+			bulkOps isection ops
+		(True, False) -> error "start isn't ours."
+		(False, True) -> error "end isn't ours."
+	where
+		bulkOps :: VertexSet -> [BulkOp as] -> AIM as ()
+		bulkOps isection [] = return ()
+		bulkOps isection (op:ops) = do
+			case op of
+				BulkIncr aindex _ _ incr -> do
+					v <- interpretValue incr
+					lift $ stingerBulkIncrementAnalysis aindex isection v
+				CountIncr v incr -> do
+					assignValue v (incr *. cst (fromIntegral $ vertexSetSize isection))
+			bulkOps isection ops
+
+interpretEdgesIntersection :: Value _a Index -> Value _b Index -> Value Asgn Index -> Value Asgn Index -> AnStatList as -> AIM as ()
+interpretEdgesIntersection a b aN bN stats = do
+	ei <- liftM isEdgeIndex get
+	s1 <- interpretVertexValue a
+	s2 <- interpretVertexValue b
 	l1 <- lift $ stingerLocalVertex s1
 	l2 <- lift $ stingerLocalVertex s2
 	case (l1,l2) of
@@ -999,9 +1070,9 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 		(True,True) -> do
 			e1 <- lift $ stingerGetEdgeSet ei s1
 			e2 <- lift $ stingerGetEdgeSet ei s2
-			let cont c = ASAssign vertexToAssign1 (cst c) :
-				ASAssign vertexToAssign2 (cst c) :
-				thenStats
+			let cont c = ASAssign aN (cst c) :
+				ASAssign bN (cst c) :
+				stats
 			isection <- lift $ stingerVertexSetIntersectionAsIndices e1 e2
 {-
 			thisNode <- lift stingerCurrentNodeIndex
@@ -1017,13 +1088,9 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 			ourEdges <- lift $ stingerGetEdgeSet ei s2
 			sendAndStop s1 s2 ourEdges
 	where
-		uncomposeLocal :: Value _a b -> Maybe Int
-		uncomposeLocal (ValueComposed v) = uncomposeLocal v
-		uncomposeLocal (ValueLocal i) = Just i
-		uncomposeLocal _ = Nothing
 		sendAndStop destIndex ourIndex ourEdges = do
 			st <- get
-			let continueStat = ASContinueEdgeIsect ourEdges vertexToAssign1 vertexToAssign2 destIndex thenStats
+			let continueStat = ASContinueEdgeIsect ourEdges aN bN destIndex stats
 			let sendSt = st { isConts = [continueStat] : isConts st }
 			lift $ stingerSendToNodeOfVertex destIndex $ ContinueIntersection sendSt
 			-- stop interpreting here. It will be continued on another node.
@@ -1032,6 +1099,17 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 			thisNode <- lift stingerCurrentNodeIndex
 			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
 ---}
+
+
+interpretOnEdges :: EnabledAnalyses as as => Value _a Index -> Value Asgn Index -> AnStatList as -> AIM as ()
+
+-- special case for edge sets intersection.
+interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
+	[ASOnEdges startVertex2 vertexToAssign2@(ValueLocal i2) [ASIf (ValueBin Equal a b) thenStats []]]
+	| Just i3 <- uncompose a
+	, Just i4 <- uncompose b
+	, (i1 == i3 && i2 == i4) || (i1 == i4 && i2 == i3) =
+		interpretEdgesIntersection startVertex1 startVertex2 vertexToAssign1 vertexToAssign2 thenStats
 
 interpretOnEdges startVertex vertexToAssign stats = do
 	error "standalone onEdges is not supported right now!"
@@ -1042,6 +1120,11 @@ interpretOnEdges startVertex vertexToAssign stats = do
 		assignValue vertexToAssign $ cst edge
 		interpretStatements stats
 -}
+
+interpretEdgeIntersectionEnumeration :: EnabledAnalyses as as =>
+	Value Asgn Index -> Value Asgn Index -> VertexSet -> AnStatList as -> AIM as ()
+interpretEdgeIntersectionEnumeration v1 v2 isection thenStats = do
+	error "interpretEdgeIntersectionEnumeration"
 
 
 interpretValue :: Value _a v -> AIM as v
@@ -1074,6 +1157,75 @@ interpretVertexValue value = do
 	lift $ stingerSplitIndex i
 
 -------------------------------------------------------------------------------
+-- Optimizing statements operations.
+
+optimizeStatements :: AnStatList as -> AnStatList as
+-- trivial case.
+optimizeStatements [] = []
+-- important case of edge intesection.
+optimizeStatements (stat : stats)
+	| Just stats' <- recognizeOptimizeIntersection stat
+		= stats' ++ optimizeStatements stats
+-- all other cases aren't optimizable.
+optimizeStatements (stat : stats) = stat : optimizeStatements stats
+
+recognizeOptimizeIntersection :: AnStatement as ->
+	Maybe (AnStatList as)
+recognizeOptimizeIntersection stat = do
+	isection <- recognizeIntersection stat
+	let isections = optimizeIntersection isection
+	return isections
+
+optimizeIntersection :: AnStatement as -> [AnStatement as]
+optimizeIntersection stat@(ASOnEdgesIntersection a b aN bN stats) = case stats of
+	[ASAtomicIncr anIx ix incr, ASAssign v (ValueBin Plus l r)]
+		| incrIsConst incr
+		, Just iix <- uncompose ix
+		, Just iaN <- uncompose aN
+		, Just ibN <- uncompose bN
+		, iix == iaN || iix == ibN
+		, Just iv <- uncompose v
+		, Just assignIncr <- uncomposeOne iv l r ->
+			[ ASIntersectionBulkOps a b [BulkIncr anIx a b incr, CountIncr v assignIncr]]
+	_ -> [stat]
+	where
+		uncomposeOne :: Int -> Value _a x -> Value _b x -> Maybe (Value Composed x)
+		uncomposeOne rq a b = do
+				i <- uncompose a
+				if i == rq then return (castComposed b) else mzero
+			`mplus` do
+				i <- uncompose b
+				if i == rq then return (castComposed a) else mzero
+		castComposed :: Value _a a -> Value Composed a
+		castComposed (ValueComposed v) = ValueComposed v
+		castComposed (ValueConst c) = ValueConst c
+		castComposed v = ValueComposed v
+		incrIsConst :: Value _a c -> Bool
+		incrIsConst (ValueConst c) = True
+		incrIsConst _ = False
+optimizeIntersection _ = error "Not an intersection interation operator."
+
+uncompose :: Value _a x -> Maybe Int
+uncompose (ValueComposed a) = uncompose a
+uncompose (ValueLocal i) = Just i
+uncompose _ = Nothing
+
+recognizeIntersection :: AnStatement as -> Maybe (AnStatement as)
+recognizeIntersection (ASOnEdges a aN [ASOnEdges b bN [ASIf cond stats []]]) = do
+	case cond of
+		ValueBin Equal x y -> do
+			ix <- uncompose x
+			iy <- uncompose y
+			iaN <- uncompose aN
+			ibN <- uncompose bN
+			if (ix == iaN && iy == ibN) || (ix == ibN && iy == iaN)
+				then return undefined
+				else mzero
+		_ -> mzero
+	return $ ASOnEdgesIntersection a b aN bN stats
+recognizeIntersection _ = mzero
+
+-------------------------------------------------------------------------------
 -- STINGER analysis combination.
 
 type family RequiredAnalyses a
@@ -1095,22 +1247,28 @@ instance (EnabledAnalyses as eas, EnabledAnalysis a eas) => EnabledAnalyses (a :
 
 data Analysis as wholeset where
 	Analysis :: (EnabledAnalyses (RequiredAnalyses a) as, EnabledAnalyses as wholeset, EnabledAnalyses (a :. as) wholeset) =>
-			(Value Composed Index -> Value Composed Index ->
-			AnM (a :. as) ()) -> Analysis (a :. as) wholeset
+			Value Asgn Index -> Value Asgn Index -> Int ->
+			AnStatList (a :. as) -> Analysis (a :. as) wholeset
 
 basicAnalysis :: ((RequiredAnalyses a) ~ Nil, EnabledAnalysis a wholeset) =>
 	a -> (a -> Value Composed Index -> Value Composed Index -> AnM (a :. Nil) ()) -> Analysis (a :. Nil) wholeset
-basicAnalysis analysis edgeInsert = Analysis (edgeInsert analysis)
+basicAnalysis analysis edgeInsert =
+	Analysis sv ev i stats
+	where
+		i = asValueIndex env
+		stats = optimizeStatements $ asStatements env
+		((sv,ev),env) = flip runState (AnSt 0 []) $ do
+			sv <- defineLocal
+			ev <- defineLocal
+			edgeInsert analysis (ValueComposed sv) (ValueComposed ev)
+			return (sv,ev)
 
 derivedAnalysis :: (EnabledAnalyses (RequiredAnalyses a) as, EnabledAnalyses as wholeset, EnabledAnalyses (a :. as) wholeset)  =>
 	Analysis as wholeset -> a -> (a -> Value Composed Index -> Value Composed Index -> AnM (a :. as) ()) -> Analysis (a :. as) wholeset
-derivedAnalysis (Analysis requiredActions) analysis edgeInsert = Analysis combinedActions
+derivedAnalysis (Analysis startV endV startI requiredActions) analysis edgeInsert =
+	Analysis startV endV i (map liftStatement requiredActions ++ currentActions)
 	where
-		liftAnalyses :: AnM req () -> AnM (a :. req) ()
-		liftAnalyses act = do
-			s <- get
-			let s' = execState act $ s { asStatements = [] }
-			put $ s { asStatements = asStatements s ++ (map liftStatement $ asStatements s') }
+		initialState = AnSt startI []
 		liftStatement :: AnStatement as -> AnStatement (a :. as)
 		liftStatement stat = case stat of
 			ASAssign v e -> ASAssign v e
@@ -1121,10 +1279,11 @@ derivedAnalysis (Analysis requiredActions) analysis edgeInsert = Analysis combin
 			ASFlagVertex v -> ASFlagVertex v
 			ASOnFlaggedVertices arg stats -> ASOnFlaggedVertices arg $ map liftStatement stats
 
-		combinedActions start end = do
-			liftAnalyses $ requiredActions start end
-			edgeInsert analysis start end
-			
+		currentActions = optimizeStatements $ asStatements env
+		i = asValueIndex env
+		env = flip execState initialState $ do
+			edgeInsert analysis (ValueComposed startV) (ValueComposed endV)
+
 
 
 class EnabledAnalysis a as => AnalysisIndex a as where

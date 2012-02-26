@@ -39,7 +39,8 @@
 
 module STINGER.IntSet  ( 
             -- * Set type
-              IntSet          -- instance Eq,Show
+            -- Exported with details for some faster operations in IntMap nearby (sergueyz).
+              IntSet(..)          -- instance Eq,Show
 
             -- * Operators
             , (\\)
@@ -108,7 +109,6 @@ import Data.Bits
 import qualified Data.List as List
 import Data.Monoid (Monoid(..))
 import Data.Maybe (fromMaybe)
-import Data.Typeable
 
 import Text.Read
 
@@ -751,9 +751,6 @@ instance Read IntSet where
 {--------------------------------------------------------------------
   Typeable
 --------------------------------------------------------------------}
-
-#include "Typeable.h"
-INSTANCE_TYPEABLE0(IntSet,intSetTc,"IntSet")
 
 {--------------------------------------------------------------------
   Debugging

@@ -162,6 +162,10 @@ module STINGER.IntMap  (
             -- * Debugging
             , showTree
             , showTreeWith
+
+            -- extras for STINGER.
+            , unionWithSetValue
+            , mapFromSetValue
             ) where
 
 
@@ -170,7 +174,6 @@ import Data.Bits
 import qualified STINGER.IntSet as IntSet
 import Data.Monoid (Monoid(..))
 import Data.Maybe (fromMaybe)
-import Data.Typeable
 import Data.Foldable (Foldable(foldMap))
 import Data.Traversable (Traversable(traverse))
 import Control.Applicative (Applicative(pure,(<*>)),(<$>))
@@ -184,7 +187,6 @@ import qualified List
 -}  
 
 import Text.Read
-import Data.Data (Data(..), mkNoRepType)
 
 import GHC.Exts ( Word(..), Int(..), shiftRL# )
 
@@ -1599,13 +1601,6 @@ instance (Read e) => Read (IntMap e) where
 #endif
 
 {--------------------------------------------------------------------
-  Typeable
---------------------------------------------------------------------}
-
-#include "Typeable.h"
-INSTANCE_TYPEABLE1(IntMap,intMapTc,"IntMap")
-
-{--------------------------------------------------------------------
   Debugging
 --------------------------------------------------------------------}
 -- | /O(n)/. Show the tree that implements the map. The tree is shown
@@ -1797,3 +1792,20 @@ foldlStrict f = go
     go z []     = z
     go z (x:xs) = z `seq` go (f z x) xs
 
+-------------------------------------------------------------------------------
+-- Very special operations.
+
+
+-- |Create an IntMap from IntSet. This is simpler and probably faster than
+-- conversion to ascending lists and then to IntMap through zip.
+{-# INLINE mapFromSetValue #-}
+mapFromSetValue :: IntSet.IntSet -> a -> IntMap a
+mapFromSetValue IntSet.Nil     _ = Nil
+mapFromSetValue (IntSet.Tip k) a = Tip k a
+mapFromSetValue (IntSet.Bin pfx mask l r) a = Bin pfx mask (mapFromSetValue l a) (mapFromSetValue r a)
+
+-- |This is unionWith where right operand represented as a IntSet of keys
+-- and single value.
+{-# INLINE unionWithSetValue #-}
+unionWithSetValue :: (a -> a -> a) -> IntMap a -> IntSet.IntSet -> a -> IntMap a
+unionWithSetValue f map set def = unionWith f map (mapFromSetValue set def)
