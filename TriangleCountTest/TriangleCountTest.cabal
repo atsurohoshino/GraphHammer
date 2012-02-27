@@ -63,3 +63,6 @@ Executable TriangleCountTest
   
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:         
+
+  -- Extra options that enable RTS and SMP runtime.
+  ghc-options: -rtsopts -threaded -O3
