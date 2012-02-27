@@ -665,7 +665,7 @@ workerThread analysis maxNodes nodeIndex chans = do
 sendOtherIncrements :: Int -> STINGERM (Msg as) as ()
 sendOtherIncrements pn = do
 	increments <- stingerGetOtherAnalyses
-	liftIO $ putStrLn $ "Others increments: "++show increments
+--	liftIO $ putStrLn $ "Others increments: "++show increments
 	forM_ increments $ \(node,incrs) -> 
 		stingerSendToNode node (AtomicIncrement pn incrs)
 
@@ -763,6 +763,7 @@ data AnStatement as where
 	ASOnFlaggedVertices :: Value Asgn Index -> AnStatList as -> AnStatement as
 	ASIntersectionBulkOps :: Value _a Index -> Value _b Index -> [BulkOp as] -> AnStatement as
 	ASContinueEdgeIsect :: VertexSet -> Value Asgn Index -> Value Asgn Index -> Vertex -> AnStatList as -> AnStatement as
+	ASContinueEdgeIsectBulk :: VertexSet -> Vertex -> [BulkOp as] -> AnStatement as
 
 indentShow = indent . show
 indent = ("    "++)
@@ -1019,6 +1020,11 @@ interpretStatement stat = case stat of
 		let cont c = ASAssign a (cst c) : ASAssign b (cst c) :
 			onEdgeStats
 		modify $! \st -> st { isConts = map cont isection ++ isConts st }
+	ASContinueEdgeIsectBulk edgeSet thisNodeVertex bulkOps -> do
+		ei <- liftM isEdgeIndex get
+		thisEdgeSet <- lift $ stingerGetEdgeSet ei thisNodeVertex
+		isection <- lift $ stingerVertexSetIntersection edgeSet thisEdgeSet
+		interpretBulkOps isection bulkOps
 	ASOnEdgesIntersection av bv aN bN stats -> do
 		interpretEdgesIntersection av bv aN bN stats
 	ASIntersectionBulkOps av bv bulkStats ->
@@ -1036,27 +1042,47 @@ interpretIntersectionBulkOps a b ops = do
 	s1 <- interpretVertexValue a
 	s2 <- interpretVertexValue b
 	l1 <- lift $ stingerLocalVertex s1
-	l2 <- lift $ stingerLocalVertex s1
+	l2 <- lift $ stingerLocalVertex s2
 	case (l1,l2) of
+		-- this is filtered out in previous steps.
 		(False, False) -> error "completely non-local computation!"
+		-- completely local computation.
 		(True, True) -> do
 			e1 <- lift $ stingerGetEdgeSet ei s1
 			e2 <- lift $ stingerGetEdgeSet ei s2
 			isection <- lift $ stingerVertexSetIntersection e1 e2
-			bulkOps isection ops
-		(True, False) -> error "start isn't ours."
-		(False, True) -> error "end isn't ours."
+			interpretBulkOps isection ops
+		-- partially local computations that started in our node.
+		(True, False) -> do
+			ourEdges <- lift $ stingerGetEdgeSet ei s1
+			sendAndStop s2 ourEdges
+		(False, True) -> do
+			ourEdges <- lift $ stingerGetEdgeSet ei s2
+			sendAndStop s1 ourEdges
 	where
-		bulkOps :: VertexSet -> [BulkOp as] -> AIM as ()
-		bulkOps isection [] = return ()
-		bulkOps isection (op:ops) = do
-			case op of
-				BulkIncr aindex _ _ incr -> do
-					v <- interpretValue incr
-					lift $ stingerBulkIncrementAnalysis aindex isection v
-				CountIncr v incr -> do
-					assignValue v (incr *. cst (fromIntegral $ vertexSetSize isection))
-			bulkOps isection ops
+		sendAndStop destIndex ourEdges = do
+			st <- get
+			let continueStat = ASContinueEdgeIsectBulk ourEdges destIndex ops
+			let sendSt = st { isConts = [continueStat] : isConts st }
+			lift $ stingerSendToNodeOfVertex destIndex $ ContinueIntersection sendSt
+			-- stop interpreting here. It will be continued on another node.
+			modify $ \st -> st { isConts = [] }
+{-
+			thisNode <- lift stingerCurrentNodeIndex
+			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
+---}
+		
+
+interpretBulkOps :: VertexSet -> [BulkOp as] -> AIM as ()
+interpretBulkOps isection [] = return ()
+interpretBulkOps isection (op:ops) = do
+	case op of
+		BulkIncr aindex _ _ incr -> do
+			v <- interpretValue incr
+			lift $ stingerBulkIncrementAnalysis aindex isection v
+		CountIncr v incr -> do
+			assignValue v (incr *. cst (fromIntegral $ vertexSetSize isection))
+	interpretBulkOps isection ops
 
 interpretEdgesIntersection :: Value _a Index -> Value _b Index -> Value Asgn Index -> Value Asgn Index -> AnStatList as -> AIM as ()
 interpretEdgesIntersection a b aN bN stats = do
