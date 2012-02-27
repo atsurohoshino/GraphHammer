@@ -728,30 +728,30 @@ analysesParallelizable (Analysis _ _ _ actions) = True
 -------------------------------------------------------------------------------
 -- Analysis construction monad.
 
-class Storable v where
+class AnalysisValue v where
 	toInt64 :: v -> Int64
 	fromInt64 :: Int64 -> v
 
-instance Storable Bool where
+instance AnalysisValue Bool where
 	toInt64 = fromIntegral . fromEnum
 	fromInt64 = toEnum . fromIntegral
 
-instance Storable Int where
+instance AnalysisValue Int where
 	toInt64 = fromIntegral
 	fromInt64 = fromIntegral
 
-instance Storable Int64 where
+instance AnalysisValue Int64 where
 	toInt64 = id
 	fromInt64 = id
 
 data BulkOp as where
 	BulkIncr :: Int -> Value _a Index -> Value _b Index -> Value _c Int64 -> BulkOp as
-	CountIncr :: (Num a, Storable a) => Value Asgn a -> Value _c a -> BulkOp as
+	CountIncr :: (Num a, AnalysisValue a) => Value Asgn a -> Value _c a -> BulkOp as
 	
 
 data AnStatement as where
 	-- destination and value
-	ASAssign :: (Show a, Storable a) => Value Asgn a -> Value _a a -> AnStatement as
+	ASAssign :: (Show a, AnalysisValue a) => Value Asgn a -> Value _a a -> AnStatement as
 	-- start vertex for edges, end vertex for edges (will be assigned in run-time),
 	-- statements to perform.
 	ASOnEdges :: Value _a Index -> Value Asgn Index -> AnStatList as -> AnStatement as
@@ -881,7 +881,7 @@ data Value asgn v where
 	-- argument's index.
 	ValueArgument :: Int -> Value Composed v 
 	-- some local variable.
-	ValueLocal :: Storable v => Int -> Value Asgn v
+	ValueLocal :: AnalysisValue v => Int -> Value Asgn v
 	-- constant. we cannot live wothout them.
 	ValueConst :: v -> Value Composed v
 	-- binary operation.
@@ -924,13 +924,13 @@ data UnOp a r where
 	Negate :: Num v => UnOp v v
 
 -- |Define a (mutable) value local to a computation.
-defineLocal :: Storable v => AnM as (Value Asgn v)
+defineLocal :: AnalysisValue v => AnM as (Value Asgn v)
 defineLocal = do
 	modify $! \as -> as { asValueIndex = asValueIndex as + 1 }
 	liftM (ValueLocal . asValueIndex) get
 
 -- |Define a local value and assign to it.
-localValue :: (Show v, Storable v) => v -> AnM as (Value Asgn v)
+localValue :: (Show v, AnalysisValue v) => v -> AnM as (Value Asgn v)
 localValue def = do
 	v <- defineLocal
 	v $= cst def
@@ -955,7 +955,7 @@ cst = ValueConst
 
 -- |Assigning a value.
 infixr 1 $=
-($=) :: (Show v, Storable v) => Value Asgn v -> Value _a v -> AnM as ()
+($=) :: (Show v, AnalysisValue v) => Value Asgn v -> Value _a v -> AnM as ()
 dest $= expr = addStatement $ ASAssign dest expr
 
 -------------------------------------------------------------------------------
