@@ -6,7 +6,7 @@
 
 {-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
-{-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction #-}
+{-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction, PatternGuards #-}
 
 module STINGER.SimplestParallel(
 	  Index	-- from G500.
