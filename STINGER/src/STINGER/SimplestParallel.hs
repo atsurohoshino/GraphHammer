@@ -562,7 +562,7 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 					forM_ [0..maxNodes-1] $ \_ -> 
 						readChan answer
 					detectSilenceAndDumpState sendReceiveCountChan maxNodes (elems chans)
-					putStrLn $ "Done waiting ("++show pn++")."
+--					putStrLn $ "Done waiting ("++show pn++")."
 					runLoop sendReceiveCountChan chans (pn+1) (n+count)
 		detectSilence countChan nodesNotSent sentReceivedBalance
 			| nodesNotSent < 0 = error $ "nodesNotSent "++show nodesNotSent++"!!!"
@@ -657,7 +657,7 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 		msg <- liftIO $ readChan ourChan
 		case msg of
 			Portion pn edges answer -> do
-				liftIO $ putStrLn $ "Portion "++show pn++" @"++show nodeIndex
+--				liftIO $ putStrLn $ "Portion "++show pn++" @"++show nodeIndex
 				let es = pairs $ Data.Array.elems edges
 				stingerFillPortionEdges es
 				stingerClearAffected
