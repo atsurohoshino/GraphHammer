@@ -6,7 +6,7 @@
 
 {-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
-{-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction, PatternGuards #-}
+{-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction, PatternGuards, BangPatterns #-}
 
 module STINGER.SimplestParallel(
 	  Index	-- from G500.
@@ -49,8 +49,8 @@ module STINGER.SimplestParallel(
 	) where
 
 import Control.Concurrent
---import Control.Concurrent.Chan
-import Control.Concurrent.STM.TChan
+import Control.Concurrent.Chan
+--import Control.Concurrent.STM.TChan
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.STM
@@ -102,7 +102,7 @@ type OtherAnalyses = IntMap AnalysesMap
 -- This should be relatively small map. Constant number of analyses multiplied by
 -- 2^30 (max number of vertices per thread) divided by analysisSliceSize.
 -- Expect it to be about 2^12 or less.
-type AnalysesArrays = Array Int (Array Int (IOUArray Int Int64))
+type AnalysesArrays = Array Int32 (Array Int32 (IOUArray Int32 Int64))
 
 type EdgeSet = IntMap VertexSet
 
@@ -118,7 +118,8 @@ data STINGER msg as = STINGER {
 	, stingerNodesAffected		:: !IntSet
 	-- what analyses were changed in affected nodes.
 	, stingerAnalysesAffected	:: !(IntMap Int)
-	, stingerChannels		:: !(Array Int (TChan msg))
+	, stingerChannels		:: !(Array Int32 (Chan msg))
+	, stingerSendReceiveChannel	:: !(Chan SendReceive)
 	-- added per portion.
 	, stingerPortionEdges		:: (Array Int EdgeSet)
 	-- increments for other nodes.
@@ -133,7 +134,7 @@ type STINGERM msg as a = StateT (STINGER msg as) IO a
 -------------------------------------------------------------------------------
 -- Working with vertex sets.
 
-data Vertex = Vertex { vertexNode, vertexIndex :: !Int }
+data Vertex = Vertex { vertexNode, vertexIndex :: !Int32 }
 	deriving (Eq, Ord, Show)
 
 -- vertex set is a map from node to a set of local indices.
@@ -176,46 +177,58 @@ vertexSetSize set = IMap.fold (+) 0 $ IMap.map ISet.size set
 
 -- |Create a STINGER structure for parallel STINGER processing.
 -- Usage: stinger <- stingerNew maxJobNodes thisNodeIndex
-stingerNew :: HLength as => Int -> Int -> Array Int (TChan msg) -> IO (STINGER msg as)
-stingerNew maxNodes nodeIndex chans = do
+stingerNew :: HLength as => Int -> Int -> Chan SendReceive -> Array Int32 (Chan msg) -> IO (STINGER msg as)
+stingerNew maxNodes nodeIndex countingChan chans = do
 	let forwardResult = undefined
 	let analysisProjection :: STINGER msg as -> as
 	    analysisProjection = error "analysisProjection result should be trated abstractly!"
 	let analysisCount = hLength $ analysisProjection forwardResult
 	let analysisHighIndex = analysisCount-1
-	analysisArrays <- liftM (array (0,analysisHighIndex)) $ forM [0..analysisHighIndex] $ \ai -> do
+	analysisArrays <- liftM (array (0,fromIntegral analysisHighIndex)) $ forM [0..fromIntegral analysisHighIndex] $ \ai -> do
 		aArr <- stingerNewAnalysisSliceArray
 		return (ai,array (0,0) [(0,aArr)])
 	let result = STINGER maxNodes nodeIndex 0 IMap.empty analysisArrays
-			ISet.empty IMap.empty chans (error "no portion edges!") IMap.empty
+			ISet.empty IMap.empty chans countingChan (error "no portion edges!") IMap.empty
 	return (result `asTypeOf` forwardResult)
 	where
 
-stingerNewAnalysisSliceArray :: IO (IOUArray Int Int64)
-stingerNewAnalysisSliceArray = newArray (0,analysisSliceSize-1) 0
+stingerCountReceived :: STINGERM msg as ()
+stingerCountReceived = do
+	countChan <- liftM stingerSendReceiveChannel get
+	liftIO $ writeChan countChan $ Received 1
+
+stingerCountSent :: Int -> STINGERM msg as ()
+stingerCountSent count = do
+	nodeIndex <- liftM stingerNodeIndex get
+	countChan <- liftM stingerSendReceiveChannel get
+	liftIO $ writeChan countChan $ Sent nodeIndex count
+
+
+stingerNewAnalysisSliceArray :: IO (IOUArray Int32 Int64)
+stingerNewAnalysisSliceArray = newArray (0,fromIntegral analysisSliceSize-1) 0
 
 stingerFillPortionEdges :: [(Index,Index)] -> STINGERM msg as ()
 stingerFillPortionEdges edges = do
-	nodeIndex <- liftM stingerNodeIndex get
-	maxNodes <- liftM stingerMaxNodes get
+	nodeIndex <- liftM (fromIntegral . stingerNodeIndex) get
+	maxNodes <- liftM (fromIntegral . stingerMaxNodes) get
 	let len = length edges
 	let sets = scanl (update maxNodes nodeIndex) IMap.empty edges
 	let arr = listArray (0,len) sets
-	modify $! \st -> st {
+	modify $! \st -> last sets `seq` st {
 		  stingerPortionEdges = arr
 		, stingerOthersAnalyses = IMap.empty
 		}
 	where
-		update :: Int -> Int -> EdgeSet -> (Index,Index) -> EdgeSet
+		update :: Int32 -> Int32 -> EdgeSet -> (Index,Index) -> EdgeSet
 		update maxNodes nodeIndex oldSet (fromI, toI)
 			| vertexNode fromV == nodeIndex && vertexNode toV == nodeIndex =
-				IMap.insertWith vertexSetUnion (vertexIndex fromV) (vertexSetSingleton toV) $
-				IMap.insertWith vertexSetUnion (vertexIndex toV) (vertexSetSingleton fromV) $
+				IMap.insertWith vertexSetUnion (vertexIndex fromV) (vertexSetSingleton toV) $!
+				IMap.insertWith vertexSetUnion (vertexIndex toV) (vertexSetSingleton fromV) $!
 				oldSet 
 			| vertexNode fromV == nodeIndex  =
-				IMap.insertWith vertexSetUnion (vertexIndex fromV) (vertexSetSingleton toV) oldSet
+				IMap.insertWith vertexSetUnion (vertexIndex fromV) (vertexSetSingleton toV) $! oldSet
 			| vertexNode toV == nodeIndex =
-				IMap.insertWith vertexSetUnion (vertexIndex toV) (vertexSetSingleton fromV) oldSet
+				IMap.insertWith vertexSetUnion (vertexIndex toV) (vertexSetSingleton fromV) $! oldSet
 			| otherwise = oldSet
 			where
 				fromV = indexToVertex maxNodes fromI
@@ -286,7 +299,7 @@ stingerGetEdgeSet edgeInPortion vertex = do
 --stingerGetEdges edgeIndex vertex = do
 --	liftM Set.toList $ stingerGetEdgeSet edgeIndex vertex
 
-stingerGrowAnalysisArrays :: Int -> STINGERM msg as ()
+stingerGrowAnalysisArrays :: Int32 -> STINGERM msg as ()
 stingerGrowAnalysisArrays newMaxIndex = do
 	analyses <- liftM stingerAnalyses get
 	let (lowA, highA) = bounds analyses
@@ -300,31 +313,31 @@ stingerGrowAnalysisArrays newMaxIndex = do
 		return (ai,array (lowAA, newMaxIndex) (assocs analysisArrays ++ addedArrays))
 	modify $! \st -> st { stingerAnalyses = array (lowA, highA) analyses' }
 
-stingerGetAnalysisArrayIndex :: Int -> Int -> STINGERM msg as (Int,IOUArray Int Int64)
+stingerGetAnalysisArrayIndex :: Int32 -> Int32 -> STINGERM msg as (Int32,IOUArray Int32 Int64)
 stingerGetAnalysisArrayIndex analysisIndex localIndex = do
 	let indexOfSlice = shiftR localIndex analysisSliceSizeShift
 	analysisArrays <- liftM ((! analysisIndex) . stingerAnalyses) get
 	let (_,highestIndex) = bounds analysisArrays
 	if highestIndex < indexOfSlice
 		then do
-			stingerGrowAnalysisArrays indexOfSlice
+			stingerGrowAnalysisArrays (fromIntegral indexOfSlice)
 			stingerGetAnalysisArrayIndex analysisIndex localIndex
 		else do
 			let sliceArray = analysisArrays ! indexOfSlice
-			return (localIndex .&. analysisSliceSizeMask, sliceArray)
+			return (localIndex .&. fromIntegral analysisSliceSizeMask, sliceArray)
 
 stingerGetAnalysis :: Int -> Index -> STINGERM msg as Int64
 stingerGetAnalysis analysisIndex index = do
 	error "stingerGetAnalysis does not distinguish between local and not-local indices!!!"
 	localIndex <- stingerIndexToLocal index
-	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex analysisIndex localIndex
+	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
 	liftIO $ readArray sliceArray sliceIndex
 
 stingerSetAnalysis :: Int -> Index -> Int64 -> STINGERM msg as ()
 stingerSetAnalysis analysisIndex index value = do
 	error "stingerSetAnalysis does not distinguish between local and not-local indices!!!"
 	localIndex <- stingerIndexToLocal index
-	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex analysisIndex localIndex
+	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
 	liftIO $ writeArray sliceArray sliceIndex value
 
 stingerIncrementAnalysis :: Int -> Index -> Int64 -> STINGERM msg as ()
@@ -338,7 +351,7 @@ stingerIncrementAnalysis analysisIndex index incr = do
 			nodeIndex <- liftM stingerNodeIndex get
 			liftIO $ putStrLn $ "Incrementing analysis["++show analysisIndex++"]["++show index++"] locally at "++show nodeIndex++" by "++show incr
 ---}
-			(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex analysisIndex local
+			(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) local
 			liftIO $ do
 				x <- readArray sliceArray sliceIndex
 				writeArray sliceArray sliceIndex (x + incr)
@@ -350,7 +363,7 @@ stingerIncrementAnalysis analysisIndex index incr = do
 			let joinAnalyses old new = IMap.unionWith (IMap.unionWith (+)) old new
 			modify $! \st -> st {
 				  stingerOthersAnalyses = IMap.insertWith joinAnalyses nodeIndex
-					(IMap.singleton local (IMap.singleton analysisIndex incr)) $
+					(IMap.singleton local (IMap.singleton (fromIntegral analysisIndex) incr)) $
 					stingerOthersAnalyses st
 				}
 {-
@@ -369,13 +382,13 @@ stingerIncrementAnalysis analysisIndex index incr = do
 stingerBulkIncrementAnalysis :: Int -> VertexSet -> Int64 -> STINGERM msg as ()
 stingerBulkIncrementAnalysis analysisIndex vertices 0 = return ()
 stingerBulkIncrementAnalysis analysisIndex vertices incr = do
-	thisNode <- liftM stingerNodeIndex get
+	thisNode <- liftM (fromIntegral . stingerNodeIndex) get
 	let (left,ours,right) = IMap.splitLookup thisNode vertices
 	case ours of
 		-- perform increments for local analyses.
 		Just vertices -> do
 			forM_ (ISet.toList vertices) $ \localIndex -> do
-				(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex analysisIndex localIndex
+				(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) (fromIntegral localIndex)
 				liftIO $ do
 					x <- readArray sliceArray sliceIndex
 					writeArray sliceArray sliceIndex (x + incr)
@@ -389,7 +402,7 @@ stingerBulkIncrementAnalysis analysisIndex vertices incr = do
 	let joinAnalyses :: VertexSet -> OtherAnalyses -> OtherAnalyses
             joinAnalyses new old = IMap.unionWith
 			(IMap.unionWith (IMap.unionWith (+)))
-			(IMap.map (flip IMap.mapFromSetValue $ IMap.singleton analysisIndex incr) new)
+			(IMap.map (flip IMap.mapFromSetValue $ IMap.singleton (fromIntegral analysisIndex) incr) new)
 			old
 	modify $! \st -> st {
 		  stingerOthersAnalyses = joinAnalyses left $ joinAnalyses right $
@@ -397,22 +410,22 @@ stingerBulkIncrementAnalysis analysisIndex vertices incr = do
 		}
 	return ()
 
-stingerGetOtherAnalyses :: STINGERM msg as [(Int,AnalysesMap)]
+stingerGetOtherAnalyses :: STINGERM msg as [(Int32,AnalysesMap)]
 stingerGetOtherAnalyses = do
 	liftM (IMap.toList . stingerOthersAnalyses) get
 
-stingerIndexToLocal :: Index -> STINGERM msg as Int
+stingerIndexToLocal :: Index -> STINGERM msg as Int32
 stingerIndexToLocal index = do
 	maxNodes <- liftM stingerMaxNodes get
 	return $ fromIntegral $ index `div` fromIntegral maxNodes
 
-stingerIndexToNodeIndex :: Index -> STINGERM msg as Int
+stingerIndexToNodeIndex :: Index -> STINGERM msg as Int32
 stingerIndexToNodeIndex index = do
 	maxNodes <- liftM stingerMaxNodes get
 	return $ fromIntegral $ index `mod` fromIntegral maxNodes
 
-stingerCurrentNodeIndex :: STINGERM msg as Int
-stingerCurrentNodeIndex = liftM stingerNodeIndex get
+stingerCurrentNodeIndex :: STINGERM msg as Int32
+stingerCurrentNodeIndex = liftM (fromIntegral . stingerNodeIndex) get
 
 stingerLocalIndex :: Index -> STINGERM msg as Bool
 stingerLocalIndex index = do
@@ -421,7 +434,7 @@ stingerLocalIndex index = do
 
 stingerLocalVertex :: Vertex -> STINGERM msg as Bool
 stingerLocalVertex vertex = do
-	liftM (vertexNode vertex ==) stingerCurrentNodeIndex
+	liftM ((vertexNode vertex ==) . fromIntegral) stingerCurrentNodeIndex
 
 -- |Compute "local job" flag from two vertices.
 -- Properties:
@@ -458,7 +471,7 @@ stingerMergeIncrements increments = do
 ---}
 	let flatIncrs = concatMap (\(i,as) -> map (\(ai,incr) -> (i,ai,incr)) $ IMap.toList as) $ IMap.toList increments
 	forM_ flatIncrs $ \(localIndex,analysisIndex,incr) -> do
-		(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex analysisIndex localIndex
+		(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) (fromIntegral localIndex)
 		liftIO $ do
 			x <- readArray sliceArray sliceIndex
 			writeArray sliceArray sliceIndex (x+incr)
@@ -467,10 +480,10 @@ stingerMergeIncrements increments = do
 		  stingerNodesAffected = ISet.union (IMap.keysSet increments) $ stingerNodesAffected st
 		}
 
-stingerSendToNode :: Int -> msg -> STINGERM msg as ()
+stingerSendToNode :: Int32 -> msg -> STINGERM msg as ()
 stingerSendToNode nodeIndex msg = do
 	nodeChan <- liftM ((!nodeIndex) . stingerChannels) get
-	liftIO $ atomically $ writeTChan nodeChan msg
+	liftIO $ writeChan nodeChan msg
 
 stingerSendToNodeOfVertex :: Vertex -> msg -> STINGERM msg as ()
 stingerSendToNodeOfVertex vertex msg = do
@@ -486,9 +499,9 @@ stingerGetAffectedAnalyses = do
 	let toGlobal i = fromIntegral i * maxNodes + nodeIndex
 	forM affected $ \localIndex -> do
 		analyses <- liftM IMap.unions $ forM (assocs (stingerAnalyses st)) $ \(ai,analysisSlices) -> do
-			(sliceIndex, slice) <- stingerGetAnalysisArrayIndex ai localIndex
+			(sliceIndex, slice) <- stingerGetAnalysisArrayIndex ai (fromIntegral localIndex)
 			x <- liftIO $ readArray slice sliceIndex
-			return (IMap.singleton ai x)
+			return (IMap.singleton (fromIntegral ai) x)
 		return (toGlobal localIndex, analyses)
 
 stingerClearAffected :: STINGERM msg as ()
@@ -506,11 +519,12 @@ runAnalysesStack :: (HLength as, EnabledAnalyses as as) => Int -> IO (Maybe (Arr
 runAnalysesStack maxNodes receiveChanges analysesStack
 	| analysesParallelizable analysesStack = do
 	putStrLn $ "Max nodes "++show maxNodes
-	chans <- liftM (listArray (0,maxNodes-1)) $ mapM (const newTChanIO) [0..maxNodes - 1]
+	chans <- liftM (listArray (0,fromIntegral maxNodes-1)) $ mapM (const newChan) [0..maxNodes - 1]
+	sendReceiveCountChan <- newChan
 	forM_ [0..maxNodes-1] $ \n -> do
-		forkIO $ workerThread analysesStack maxNodes n chans
+		forkIO $ workerThread analysesStack maxNodes n sendReceiveCountChan chans
 	startTime <- getClockTime
-	n <- runLoop chans 0 0
+	n <- runLoop sendReceiveCountChan chans 0 0
 	endTime <- getClockTime
 	let timeDiff = diffClockTimes endTime startTime
 	let picoSecs = 1000000000000
@@ -523,7 +537,7 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 	where
 		pairs (x:y:xys) = (x,y) : pairs xys
 		pairs _ = []
-		runLoop chans pn n = do
+		runLoop sendReceiveCountChan chans pn n = do
 			edges <- liftIO receiveChanges
 			case edges of
 				Nothing -> do
@@ -531,7 +545,7 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 --						putStrLn $ "Stopping threads ("++show pn++")."
 						answer <- newChan
 						forM_ (elems chans) $ \ch -> do
-							atomically (writeTChan ch (Stop answer))
+							writeChan ch (Stop answer)
 						forM_ (elems chans) $ \_ -> do
 							readChan answer
 --						putStrLn $ "Done stopping ("++show pn++")."
@@ -541,23 +555,35 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 					let count = div (up-low+1) 2
 					answer <- newChan
 					-- seed the work.
-					forM_ (elems chans) $ \ch -> atomically (writeTChan ch (Portion pn edges answer))
+					forM_ (elems chans) $ \ch -> writeChan ch (Portion pn edges answer)
 					-- wait for answers.
-					putStrLn $ "Waiting for threads ("++show pn++")."
+--					putStrLn $ "Waiting for threads ("++show pn++")."
+					hFlush stdout
 					forM_ [0..maxNodes-1] $ \_ -> 
 						readChan answer
-					detectSilenceAndDumpState (elems chans)
---					putStrLn $ "Done waiting ("++show pn++")."
-					runLoop chans (pn+1) (n+count)
-		detectSilence allChans [] = return ()
-		detectSilence allChans (chan:chans) = do
-			empty <- atomically $ isEmptyTChan chan
-			if empty then detectSilence allChans chans
-				else detectSilence allChans allChans
+					detectSilenceAndDumpState sendReceiveCountChan maxNodes (elems chans)
+					putStrLn $ "Done waiting ("++show pn++")."
+					runLoop sendReceiveCountChan chans (pn+1) (n+count)
+		detectSilence countChan nodesNotSent sentReceivedBalance
+			| nodesNotSent < 0 = error $ "nodesNotSent "++show nodesNotSent++"!!!"
+			| nodesNotSent > 0 = continue
+			| sentReceivedBalance < 0 = error $ "sentReceivedBalance "++show sentReceivedBalance++"!!!"
+			| sentReceivedBalance > 0 = continue
+			| otherwise = return ()
+			where
+				continue = do
+					msg <- readChan countChan
+					case msg of
+						Sent _ i -> detectSilence countChan
+							(nodesNotSent-1)
+							(sentReceivedBalance + i)
+						Received n -> detectSilence countChan
+							nodesNotSent
+							(sentReceivedBalance - n)
 		gatherDumpAffected chans = do
 			putStrLn $ "Analyses of affected indices:"
 			answer <- newChan
-			forM_ chans $ \ch -> atomically (writeTChan ch $ GetAffected answer)
+			forM_ chans $ \ch -> writeChan ch $ GetAffected answer
 			allAffected <- flip (flip foldM []) chans $ \totalAffected _ -> do
 				someAffected <- readChan answer
 				return $ totalAffected ++someAffected
@@ -566,11 +592,11 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 				putStrLn $ "    Index "++show ix
 				forM_ (IMap.toList analyses) $ \(ai,a) -> do
 					putStrLn $ "        Analysis["++show ai++"]: "++show a
-		detectSilenceAndDumpState chans = do
-			putStrLn $ "Detecting silence."
-			detectSilence chans chans
-			putStrLn "All is silent."
-			gatherDumpAffected chans
+		detectSilenceAndDumpState countChan nNodes chans = do
+--			putStrLn $ "Detecting silence."
+			detectSilence countChan nNodes 0
+--			putStrLn "All is silent."
+--			gatherDumpAffected chans
 		performInsertionAndAnalyses edgeList = do
 			insertAndAnalyzeSimpleSequential analysesStack edgeList
 
@@ -587,27 +613,33 @@ data Msg as =
 	|	GetAffected (Chan [(Index,IntMap Int64)])
 	|	Stop (Chan Int)
 
+-- |Counting messages sent and received.
+data SendReceive =
+		Sent Int Int
+	|	Received Int
 
-type MsgChan as = TChan (Msg as)
+type MsgChan as = Chan (Msg as)
 
 createMessageChannel :: IO (MsgChan as)
-createMessageChannel = newTChanIO
+createMessageChannel = newChan
 
-type ChanArr as = Array Int (MsgChan as)
+type ChanArr as = Array Int32 (MsgChan as)
 type MsgChanArr as = ChanArr as
 
-workerThread :: (HLength as, EnabledAnalyses as as) => Analysis as as -> Int -> Int -> MsgChanArr as -> IO ()
-workerThread analysis maxNodes nodeIndex chans = do
-	let ourChan = chans ! nodeIndex
-	stinger <- stingerNew maxNodes nodeIndex chans
+workerThread :: (HLength as, EnabledAnalyses as as) => Analysis as as ->
+	Int -> Int -> Chan SendReceive -> MsgChanArr as -> IO ()
+workerThread analysis maxNodes nodeIndex countingChan chans = do
+	let ourChan = chans ! fromIntegral nodeIndex
+	stinger <- stingerNew maxNodes nodeIndex countingChan chans
 	let --receiveLoop :: EnabledAnalysis as as => Int -> STINGERM (Msg as) as ()
 	    receiveLoop n
 		| n <= 0 = return ()
 		| otherwise = do
-		msg <- liftIO $ atomically $ readTChan ourChan
+		msg <- liftIO $ readChan ourChan
 		case msg of
 			AtomicIncrement pn changes -> do
 				stingerMergeIncrements changes
+				stingerCountReceived
 				receiveLoop n
 			ContinueIntersection env -> do
 				interpret env
@@ -617,12 +649,12 @@ workerThread analysis maxNodes nodeIndex chans = do
 				liftIO $ putStrLn "resending."
 --				liftIO $ hFlush stdout
 ---}
-				liftIO $ atomically $ writeTChan ourChan msg
+				liftIO $ writeChan ourChan msg
 				receiveLoop n
 	let --mainLoop :: EnabledAnalysis as as => STINGERM (Msg as) as ()
 	    mainLoop = do
 --		liftIO $ putStrLn $ "mainloop receiving @"++show nodeIndex
-		msg <- liftIO $ atomically $ readTChan ourChan
+		msg <- liftIO $ readChan ourChan
 		case msg of
 			Portion pn edges answer -> do
 				liftIO $ putStrLn $ "Portion "++show pn++" @"++show nodeIndex
@@ -633,17 +665,18 @@ workerThread analysis maxNodes nodeIndex chans = do
 					incr <- workOnEdge analysis i f t
 					return $! n + incr
 				count <- foldM work 0 $ zip [0..] es
-				liftIO $ putStrLn $ "Need to receive "++show count++" msgs @"++show nodeIndex
+--				liftIO $ putStrLn $ "Need to receive "++show count++" msgs @"++show nodeIndex
 				receiveLoop count
-				liftIO $ putStrLn $ "Sending others' increments."
+--				liftIO $ putStrLn $ "Sending others' increments."
 				sendOtherIncrements pn
-				liftIO $ putStrLn $ "Committing portion."
+--				liftIO $ putStrLn $ "Committing portion."
 				stingerCommitNewPortion
-				liftIO $ putStrLn $ "Sending answer."
 				liftIO $ writeChan answer ()
+--				liftIO $ putStrLn $ "Sending answer."
 				mainLoop
 			AtomicIncrement pn changes -> do
 				stingerMergeIncrements changes
+				stingerCountReceived
 				mainLoop
 			Stop answer -> do
 				liftIO $ putStrLn $ "stopped "++show nodeIndex
@@ -654,7 +687,7 @@ workerThread analysis maxNodes nodeIndex chans = do
 				liftIO $ writeChan answer affectedAnalysis
 				mainLoop
 			msg -> do
-				liftIO $ atomically $ writeTChan ourChan msg
+				liftIO $ writeChan ourChan msg
 				mainLoop
 	flip runStateT stinger $ mainLoop
 	return ()
@@ -667,7 +700,8 @@ sendOtherIncrements pn = do
 	increments <- stingerGetOtherAnalyses
 --	liftIO $ putStrLn $ "Others increments: "++show increments
 	forM_ increments $ \(node,incrs) -> 
-		stingerSendToNode node (AtomicIncrement pn incrs)
+		stingerSendToNode (fromIntegral node) (AtomicIncrement pn incrs)
+	stingerCountSent $ length increments
 
 workOnEdge :: Analysis as as -> Int -> Index -> Index -> STINGERM (Msg as) as Int
 workOnEdge analysis edgeIndex fromIndex toIndex = do
@@ -762,8 +796,8 @@ data AnStatement as where
 	ASFlagVertex :: Value _a Index -> AnStatement as
 	ASOnFlaggedVertices :: Value Asgn Index -> AnStatList as -> AnStatement as
 	ASIntersectionBulkOps :: Value _a Index -> Value _b Index -> [BulkOp as] -> AnStatement as
-	ASContinueEdgeIsect :: VertexSet -> Value Asgn Index -> Value Asgn Index -> Vertex -> AnStatList as -> AnStatement as
-	ASContinueEdgeIsectBulk :: VertexSet -> Vertex -> [BulkOp as] -> AnStatement as
+	ASContinueEdgeIsect :: !VertexSet -> Value Asgn Index -> Value Asgn Index -> Vertex -> AnStatList as -> AnStatement as
+	ASContinueEdgeIsectBulk :: !VertexSet -> !Vertex -> [BulkOp as] -> AnStatement as
 
 indentShow = indent . show
 indent = ("    "++)
@@ -785,7 +819,7 @@ instance Show (AnStatement as) where
 type AnStatList as = [AnStatement as]
 
 data AnSt as = AnSt {
-	  asValueIndex		:: !Int
+	  asValueIndex		:: !Int32
 	, asStatements		:: !(AnStatList as)
 	}
 
@@ -882,7 +916,7 @@ data Value asgn v where
 	-- argument's index.
 	ValueArgument :: Int -> Value Composed v 
 	-- some local variable.
-	ValueLocal :: AnalysisValue v => Int -> Value Asgn v
+	ValueLocal :: AnalysisValue v => Int32 -> Value Asgn v
 	-- constant. we cannot live wothout them.
 	ValueConst :: v -> Value Composed v
 	-- binary operation.
@@ -1063,8 +1097,8 @@ interpretIntersectionBulkOps a b ops = do
 		sendAndStop destIndex ourEdges = do
 			st <- get
 			let continueStat = ASContinueEdgeIsectBulk ourEdges destIndex ops
-			let sendSt = st { isConts = [continueStat] : isConts st }
-			lift $ stingerSendToNodeOfVertex destIndex $ ContinueIntersection sendSt
+			let sendSt = continueStat `seq` st { isConts = [continueStat] : isConts st }
+			lift $ stingerSendToNodeOfVertex destIndex $! ContinueIntersection sendSt
 			-- stop interpreting here. It will be continued on another node.
 			modify $ \st -> st { isConts = [] }
 {-
@@ -1215,7 +1249,7 @@ optimizeIntersection stat@(ASOnEdgesIntersection a b aN bN stats) = case stats o
 			[ ASIntersectionBulkOps a b [BulkIncr anIx a b incr, CountIncr v assignIncr]]
 	_ -> [stat]
 	where
-		uncomposeOne :: Int -> Value _a x -> Value _b x -> Maybe (Value Composed x)
+		uncomposeOne :: Int32 -> Value _a x -> Value _b x -> Maybe (Value Composed x)
 		uncomposeOne rq a b = do
 				i <- uncompose a
 				if i == rq then return (castComposed b) else mzero
@@ -1231,7 +1265,7 @@ optimizeIntersection stat@(ASOnEdgesIntersection a b aN bN stats) = case stats o
 		incrIsConst _ = False
 optimizeIntersection _ = error "Not an intersection interation operator."
 
-uncompose :: Value _a x -> Maybe Int
+uncompose :: Value _a x -> Maybe Int32
 uncompose (ValueComposed a) = uncompose a
 uncompose (ValueLocal i) = Just i
 uncompose _ = Nothing
@@ -1273,7 +1307,7 @@ instance (EnabledAnalyses as eas, EnabledAnalysis a eas) => EnabledAnalyses (a :
 
 data Analysis as wholeset where
 	Analysis :: (EnabledAnalyses (RequiredAnalyses a) as, EnabledAnalyses as wholeset, EnabledAnalyses (a :. as) wholeset) =>
-			Value Asgn Index -> Value Asgn Index -> Int ->
+			Value Asgn Index -> Value Asgn Index -> Int32 ->
 			AnStatList (a :. as) -> Analysis (a :. as) wholeset
 
 basicAnalysis :: ((RequiredAnalyses a) ~ Nil, EnabledAnalysis a wholeset) =>

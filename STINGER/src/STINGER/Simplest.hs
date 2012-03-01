@@ -120,13 +120,13 @@ stingerGetEdges start =
 
 stingerGetAnalysis :: Int -> Index -> STINGERM as Int64
 stingerGetAnalysis analysisIndex index = 
-	liftM (Map.findWithDefault 0 analysisIndex . Map.findWithDefault Map.empty (fromIntegral index) . stingerAnalyses) get
+	liftM (Map.findWithDefault 0 (fromIntegral analysisIndex) . Map.findWithDefault Map.empty (fromIntegral index) . stingerAnalyses) get
 
 stingerSetAnalysis :: Int -> Index -> Int64 -> STINGERM as ()
 stingerSetAnalysis analysisIndex index' value = do
 	let index = fromIntegral index'
 	modify $! \st -> let
-			analyses = Map.insertWith Map.union index (Map.singleton analysisIndex value) $
+			analyses = Map.insertWith Map.union index (Map.singleton (fromIntegral analysisIndex) value) $
 				stingerAnalyses st
 		in analyses `seq` st {
 		  stingerAnalyses = analyses
@@ -137,7 +137,7 @@ stingerIncrementAnalysis :: Int -> Index -> Int64 -> STINGERM as ()
 stingerIncrementAnalysis analysisIndex index' incr = do
 	let index = fromIntegral index'
 	modify $! \st -> let
-			analyses = Map.insertWith (Map.unionWith (\a b -> a `seq` b ` seq` a + b)) index (Map.singleton analysisIndex incr) $
+			analyses = Map.insertWith (Map.unionWith (\a b -> a `seq` b ` seq` a + b)) index (Map.singleton (fromIntegral analysisIndex) incr) $
 				stingerAnalyses st
 		in analyses `seq` st {
 		  stingerAnalyses = analyses
@@ -243,7 +243,7 @@ data AnStatement as where
 	ASOnFlaggedVertices :: Value Asgn Index -> [AnStatement as] -> AnStatement as
 
 data AnSt as = AnSt {
-	  asValueIndex		:: !Int
+	  asValueIndex		:: !Int32
 	, asStatements		:: ![AnStatement as]
 	}
 
@@ -338,7 +338,7 @@ data Value asgn v where
 	-- argument's index.
 	ValueArgument :: Int -> Value Composed v 
 	-- some local variable.
-	ValueLocal :: Storable v => Int -> Value Asgn v
+	ValueLocal :: Storable v => Int32 -> Value Asgn v
 	-- constant. we cannot live wothout them.
 	ValueConst :: v -> Value Composed v
 	-- binary operation.
@@ -469,7 +469,7 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 		assignValue vertexToAssign2 c
 		interpretStatements thenStats
 	where
-		uncomposeLocal :: Value _a b -> Maybe Int
+		uncomposeLocal :: Value _a b -> Maybe Int32
 		uncomposeLocal (ValueComposed v) = uncomposeLocal v
 		uncomposeLocal (ValueLocal i) = Just i
 		uncomposeLocal _ = Nothing
