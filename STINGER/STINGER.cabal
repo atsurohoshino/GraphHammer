@@ -64,7 +64,9 @@ Library
 
   
   -- Modules not exported by this package.
-  Other-modules:       STINGER.SimplestVerification, STINGER.SimplestWithArrays, STINGER.IntSet, STINGER.IntMap
+  Other-modules:       STINGER.IntSet, STINGER.IntMap
   
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:         
+
+  ghc-options: -O3

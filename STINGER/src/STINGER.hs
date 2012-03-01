@@ -7,7 +7,6 @@ module STINGER(
 	-- Selecting implementation to export.
 	, module STINGER.SimplestParallel
 	--, module STINGER.Simplest
-	--, module STINGER.SimplestWithArrays
 	) where
 
 -- Information storage and retrieval.
@@ -15,5 +14,4 @@ import STINGER.Info
 
 -- Prototype implementation.
 import STINGER.Simplest
-import STINGER.SimplestWithArrays
 import STINGER.SimplestParallel

@@ -109,6 +109,8 @@ import Data.Bits
 import qualified Data.List as List
 import Data.Monoid (Monoid(..))
 import Data.Maybe (fromMaybe)
+import Data.Int
+import Data.Word
 
 import Text.Read
 
@@ -117,12 +119,12 @@ import GHC.Exts ( Word(..), Int(..), shiftRL# )
 infixl 9 \\{-This comment teaches CPP correct behaviour -}
 
 -- A "Nat" is a natural machine word (an unsigned Int)
-type Nat = Word
+type Nat = Word32
 
-natFromInt :: Int -> Nat
+natFromInt :: Int32 -> Nat
 natFromInt i = fromIntegral i
 
-intFromNat :: Nat -> Int
+intFromNat :: Nat -> Int32
 intFromNat w = fromIntegral w
 
 shiftRL :: Nat -> Int -> Nat
@@ -140,7 +142,7 @@ m1 \\ m2 = difference m1 m2
 --------------------------------------------------------------------}
 -- | A set of integers.
 data IntSet = Nil
-            | Tip {-# UNPACK #-} !Int
+            | Tip {-# UNPACK #-} !Key
             | Bin {-# UNPACK #-} !Prefix {-# UNPACK #-} !Mask !IntSet !IntSet
 -- Invariant: Nil is never found as a child of Bin.
 -- Invariant: The Mask is a power of 2.  It is the largest bit position at which
@@ -151,8 +153,9 @@ data IntSet = Nil
 --            don't have the mask bit set; right is all the elements that do.
 
 
-type Prefix = Int
-type Mask   = Int
+type Key    = Int32
+type Prefix = Int32
+type Mask   = Int32
 
 instance Monoid IntSet where
     mempty  = empty
@@ -176,7 +179,7 @@ size t
       Nil   -> 0
 
 -- | /O(min(n,W))/. Is the value a member of the set?
-member :: Int -> IntSet -> Bool
+member :: Key -> IntSet -> Bool
 member x t
   = case t of
       Bin p m l r 
@@ -187,15 +190,15 @@ member x t
       Nil   -> False
     
 -- | /O(min(n,W))/. Is the element not in the set?
-notMember :: Int -> IntSet -> Bool
+notMember :: Key -> IntSet -> Bool
 notMember k = not . member k
 
 -- 'lookup' is used by 'intersection' for left-biasing
-lookup :: Int -> IntSet -> Maybe Int
+lookup :: Key -> IntSet -> Maybe Key
 lookup k t
   = let nk = natFromInt k  in seq nk (lookupN nk t)
 
-lookupN :: Nat -> IntSet -> Maybe Int
+lookupN :: Nat -> IntSet -> Maybe Key
 lookupN k t
   = case t of
       Bin _ m l r
@@ -215,7 +218,7 @@ empty
   = Nil
 
 -- | /O(1)/. A set of one element.
-singleton :: Int -> IntSet
+singleton :: Key -> IntSet
 singleton x
   = Tip x
 
@@ -225,7 +228,7 @@ singleton x
 -- | /O(min(n,W))/. Add a value to the set. When the value is already
 -- an element of the set, it is replaced by the new one, ie. 'insert'
 -- is left-biased.
-insert :: Int -> IntSet -> IntSet
+insert :: Key -> IntSet -> IntSet
 insert x t
   = case t of
       Bin p m l r 
@@ -238,7 +241,7 @@ insert x t
       Nil -> Tip x
 
 -- right-biased insertion, used by 'union'
-insertR :: Int -> IntSet -> IntSet
+insertR :: Key -> IntSet -> IntSet
 insertR x t
   = case t of
       Bin p m l r 
@@ -252,7 +255,7 @@ insertR x t
 
 -- | /O(min(n,W))/. Delete a value in the set. Returns the
 -- original set when the value was not present.
-delete :: Int -> IntSet -> IntSet
+delete :: Key -> IntSet -> IntSet
 delete x t
   = case t of
       Bin p m l r 
@@ -412,7 +415,7 @@ isSubsetOf Nil _            = True
   Filter
 --------------------------------------------------------------------}
 -- | /O(n)/. Filter all elements that satisfy some predicate.
-filter :: (Int -> Bool) -> IntSet -> IntSet
+filter :: (Key -> Bool) -> IntSet -> IntSet
 filter predicate t
   = case t of
       Bin p m l r 
@@ -423,7 +426,7 @@ filter predicate t
       Nil -> Nil
 
 -- | /O(n)/. partition the set according to some predicate.
-partition :: (Int -> Bool) -> IntSet -> (IntSet,IntSet)
+partition :: (Key -> Bool) -> IntSet -> (IntSet,IntSet)
 partition predicate t
   = case t of
       Bin p m l r 
@@ -441,7 +444,7 @@ partition predicate t
 -- comprises the elements of @set@ greater than @x@.
 --
 -- > split 3 (fromList [1..5]) == (fromList [1,2], fromList [4,5])
-split :: Int -> IntSet -> (IntSet,IntSet)
+split :: Key -> IntSet -> (IntSet,IntSet)
 split x t
   = case t of
       Bin _ m l r
@@ -455,7 +458,7 @@ split x t
         | otherwise   -> (Nil,Nil)
       Nil             -> (Nil, Nil)
 
-split' :: Int -> IntSet -> (IntSet,IntSet)
+split' :: Key -> IntSet -> (IntSet,IntSet)
 split' x t
   = case t of
       Bin p m l r
@@ -471,7 +474,7 @@ split' x t
 
 -- | /O(min(n,W))/. Performs a 'split' but also returns whether the pivot
 -- element was found in the original set.
-splitMember :: Int -> IntSet -> (IntSet,Bool,IntSet)
+splitMember :: Key -> IntSet -> (IntSet,Bool,IntSet)
 splitMember x t
   = case t of
       Bin _ m l r
@@ -485,7 +488,7 @@ splitMember x t
         | otherwise -> (Nil,True,Nil)
       Nil -> (Nil,False,Nil)
 
-splitMember' :: Int -> IntSet -> (IntSet,Bool,IntSet)
+splitMember' :: Key -> IntSet -> (IntSet,Bool,IntSet)
 splitMember' x t
   = case t of
       Bin p m l r
@@ -505,7 +508,7 @@ splitMember' x t
 
 -- | /O(min(n,W))/. Retrieves the maximal key of the set, and the set
 -- stripped of that element, or 'Nothing' if passed an empty set.
-maxView :: IntSet -> Maybe (Int, IntSet)
+maxView :: IntSet -> Maybe (Key, IntSet)
 maxView t
     = case t of
         Bin p m l r | m < 0 -> let (result,t') = maxViewUnsigned l in Just (result, bin p m t' r)
@@ -513,7 +516,7 @@ maxView t
         Tip y -> Just (y,Nil)
         Nil -> Nothing
 
-maxViewUnsigned :: IntSet -> (Int, IntSet)
+maxViewUnsigned :: IntSet -> (Key, IntSet)
 maxViewUnsigned t 
     = case t of
         Bin p m l r -> let (result,t') = maxViewUnsigned r in (result, bin p m l t')
@@ -522,7 +525,7 @@ maxViewUnsigned t
 
 -- | /O(min(n,W))/. Retrieves the minimal key of the set, and the set
 -- stripped of that element, or 'Nothing' if passed an empty set.
-minView :: IntSet -> Maybe (Int, IntSet)
+minView :: IntSet -> Maybe (Key, IntSet)
 minView t
     = case t of
         Bin p m l r | m < 0 -> let (result,t') = minViewUnsigned r in Just (result, bin p m l t')            
@@ -530,7 +533,7 @@ minView t
         Tip y -> Just (y, Nil)
         Nil -> Nothing
 
-minViewUnsigned :: IntSet -> (Int, IntSet)
+minViewUnsigned :: IntSet -> (Key, IntSet)
 minViewUnsigned t 
     = case t of
         Bin p m l r -> let (result,t') = minViewUnsigned l in (result, bin p m t' r)
@@ -540,18 +543,18 @@ minViewUnsigned t
 -- | /O(min(n,W))/. Delete and find the minimal element.
 -- 
 -- > deleteFindMin set = (findMin set, deleteMin set)
-deleteFindMin :: IntSet -> (Int, IntSet)
+deleteFindMin :: IntSet -> (Key, IntSet)
 deleteFindMin = fromMaybe (error "deleteFindMin: empty set has no minimal element") . minView
 
 -- | /O(min(n,W))/. Delete and find the maximal element.
 -- 
 -- > deleteFindMax set = (findMax set, deleteMax set)
-deleteFindMax :: IntSet -> (Int, IntSet)
+deleteFindMax :: IntSet -> (Key, IntSet)
 deleteFindMax = fromMaybe (error "deleteFindMax: empty set has no maximal element") . maxView
 
 
 -- | /O(min(n,W))/. The minimal element of the set.
-findMin :: IntSet -> Int
+findMin :: IntSet -> Key
 findMin Nil = error "findMin: empty set has no minimal element"
 findMin (Tip x) = x
 findMin (Bin _ m l r)
@@ -562,7 +565,7 @@ findMin (Bin _ m l r)
           find Nil            = error "findMin Nil"
 
 -- | /O(min(n,W))/. The maximal element of a set.
-findMax :: IntSet -> Int
+findMax :: IntSet -> Key
 findMax Nil = error "findMax: empty set has no maximal element"
 findMax (Tip x) = x
 findMax (Bin _ m l r)
@@ -591,7 +594,7 @@ deleteMax = maybe (error "deleteMax: empty set has no maximal element") snd . ma
 -- It's worth noting that the size of the result may be smaller if,
 -- for some @(x,y)@, @x \/= y && f x == f y@
 
-map :: (Int->Int) -> IntSet -> IntSet
+map :: (Key->Key) -> IntSet -> IntSet
 map f = fromList . List.map f . toList
 
 {--------------------------------------------------------------------
@@ -601,7 +604,7 @@ map f = fromList . List.map f . toList
 --
 -- > sum set   == fold (+) 0 set
 -- > elems set == fold (:) [] set
-fold :: (Int -> b -> b) -> b -> IntSet -> b
+fold :: (Key -> b -> b) -> b -> IntSet -> b
 fold f z t
   = case t of
       Bin 0 m l r | m < 0 -> foldr f (foldr f z l) r  
@@ -610,7 +613,7 @@ fold f z t
       Tip x       -> f x z
       Nil         -> z
 
-foldr :: (Int -> b -> b) -> b -> IntSet -> b
+foldr :: (Key -> b -> b) -> b -> IntSet -> b
 foldr f z t
   = case t of
       Bin _ _ l r -> foldr f (foldr f z r) l
@@ -621,7 +624,7 @@ foldr f z t
   List variations 
 --------------------------------------------------------------------}
 -- | /O(n)/. The elements of a set. (For sets, this is equivalent to toList)
-elems :: IntSet -> [Int]
+elems :: IntSet -> [Key]
 elems s
   = toList s
 
@@ -629,16 +632,16 @@ elems s
   Lists 
 --------------------------------------------------------------------}
 -- | /O(n)/. Convert the set to a list of elements.
-toList :: IntSet -> [Int]
+toList :: IntSet -> [Key]
 toList t
   = fold (:) [] t
 
 -- | /O(n)/. Convert the set to an ascending list of elements.
-toAscList :: IntSet -> [Int]
+toAscList :: IntSet -> [Key]
 toAscList t = toList t
 
 -- | /O(n*min(n,W))/. Create a set from a list of integers.
-fromList :: [Int] -> IntSet
+fromList :: [Key] -> IntSet
 fromList xs
   = foldlStrict ins empty xs
   where
@@ -646,7 +649,7 @@ fromList xs
 
 -- | /O(n)/. Build a set from an ascending list of elements.
 -- /The precondition (input list is ascending) is not checked./
-fromAscList :: [Int] -> IntSet 
+fromAscList :: [Key] -> IntSet 
 fromAscList [] = Nil
 fromAscList (x0 : xs0) = fromDistinctAscList (combineEq x0 xs0)
   where 
@@ -657,7 +660,7 @@ fromAscList (x0 : xs0) = fromDistinctAscList (combineEq x0 xs0)
 
 -- | /O(n)/. Build a set from an ascending list of distinct elements.
 -- /The precondition (input list is strictly ascending) is not checked./
-fromDistinctAscList :: [Int] -> IntSet
+fromDistinctAscList :: [Key] -> IntSet
 fromDistinctAscList []         = Nil
 fromDistinctAscList (z0 : zs0) = work z0 zs0 Nada
   where
@@ -847,11 +850,11 @@ bin p m l r   = Bin p m l r
 {--------------------------------------------------------------------
   Endian independent bit twiddling
 --------------------------------------------------------------------}
-zero :: Int -> Mask -> Bool
+zero :: Key -> Mask -> Bool
 zero i m
   = (natFromInt i) .&. (natFromInt m) == 0
 
-nomatch,match :: Int -> Prefix -> Mask -> Bool
+nomatch,match :: Key -> Prefix -> Mask -> Bool
 nomatch i p m
   = (mask i m) /= p
 
@@ -860,7 +863,7 @@ match i p m
 
 -- Suppose a is largest such that 2^a divides 2*m.
 -- Then mask i m is i with the low a bits zeroed out.
-mask :: Int -> Mask -> Prefix
+mask :: Key -> Mask -> Prefix
 mask i m
   = maskW (natFromInt i) (natFromInt m)
 
