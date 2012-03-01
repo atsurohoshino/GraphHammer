@@ -542,13 +542,11 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 			case edges of
 				Nothing -> do
 					liftIO $ do
---						putStrLn $ "Stopping threads ("++show pn++")."
 						answer <- newChan
 						forM_ (elems chans) $ \ch -> do
 							writeChan ch (Stop answer)
 						forM_ (elems chans) $ \_ -> do
 							readChan answer
---						putStrLn $ "Done stopping ("++show pn++")."
 					return n
 				Just edges -> do
 					let (low,up) = bounds edges
