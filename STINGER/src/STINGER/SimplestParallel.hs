@@ -562,7 +562,11 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 					forM_ [0..maxNodes-1] $ \_ -> 
 						readChan answer
 					detectSilenceAndDumpState sendReceiveCountChan maxNodes (elems chans)
+<<<<<<< HEAD
 --					putStrLn $ "Done waiting ("++show pn++")."
+=======
+					putStrLn $ "Done waiting ("++show pn++")."
+>>>>>>> 17b3f5f9c4e8746d29aded63308bfb0ded8f8101
 					runLoop sendReceiveCountChan chans (pn+1) (n+count)
 		detectSilence countChan nodesNotSent sentReceivedBalance
 			| nodesNotSent < 0 = error $ "nodesNotSent "++show nodesNotSent++"!!!"
