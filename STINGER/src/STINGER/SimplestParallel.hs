@@ -524,20 +524,26 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 	forM_ [0..maxNodes-1] $ \n -> do
 		forkIO $ workerThread analysesStack maxNodes n sendReceiveCountChan chans
 	startTime <- getClockTime
-	n <- runLoop sendReceiveCountChan chans 0 0
+	(computationPicosecs, n) <- runLoop 0 sendReceiveCountChan chans 0 0
 	endTime <- getClockTime
 	let timeDiff = diffClockTimes endTime startTime
 	let picoSecs = 1000000000000
 	let diffPicoSecs = fromIntegral (tdSec timeDiff) * picoSecs + fromIntegral (tdPicosec timeDiff)
 	let edgesPerSecond = fromIntegral n * picoSecs / diffPicoSecs
-	putStrLn $ "Edges per second "++show edgesPerSecond
-	putStrLn $ "Edges "++show n
-	putStrLn $ "Seconds "++show (diffPicoSecs / picoSecs)
+	putStrLn $ "Edges: "++show n
+	putStrLn $ "Edges per second for total time: "++show edgesPerSecond
+	putStrLn $ "Total time in seconds: "++show (diffPicoSecs / picoSecs)
+	let computationSeconds = fromIntegral computationPicosecs / picoSecs
+	putStrLn $ "Edges per second for computation time: "++show (fromIntegral n / computationSeconds)
+	putStrLn $ "Computation time in seconds: "++show computationSeconds
 	return ()
 	where
+		getClockPicoseconds = do
+			(TOD seconds picoseconds) <- getClockTime
+			return $ seconds * 1000000000000 + picoseconds
 		pairs (x:y:xys) = (x,y) : pairs xys
 		pairs _ = []
-		runLoop sendReceiveCountChan chans pn n = do
+		runLoop time sendReceiveCountChan chans pn n = do
 			edges <- liftIO receiveChanges
 			case edges of
 				Nothing -> do
@@ -547,8 +553,9 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 							writeChan ch (Stop answer)
 						forM_ (elems chans) $ \_ -> do
 							readChan answer
-					return n
+					return (time,n)
 				Just edges -> do
+					start <- getClockPicoseconds
 					let (low,up) = bounds edges
 					let count = div (up-low+1) 2
 					answer <- newChan
@@ -561,7 +568,8 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 						readChan answer
 					detectSilenceAndDumpState sendReceiveCountChan maxNodes (elems chans)
 --					putStrLn $ "Done waiting ("++show pn++")."
-					runLoop sendReceiveCountChan chans (pn+1) (n+count)
+					end <- getClockPicoseconds
+					runLoop (time + end - start) sendReceiveCountChan chans (pn+1) (n+count)
 		detectSilence countChan nodesNotSent sentReceivedBalance
 			| nodesNotSent < 0 = error $ "nodesNotSent "++show nodesNotSent++"!!!"
 			| nodesNotSent > 0 = continue
