@@ -107,7 +107,7 @@ type AnalysesArrays = Array Int32 (Array Int32 (IOUArray Int32 Int64))
 type EdgeSet = IntMap VertexSet
 
 -- |A representation parametrized by analyses required.
-data STINGER msg as = STINGER {
+data STINGER as = STINGER {
 	  stingerMaxNodes		:: !Int
 	, stingerNodeIndex		:: !Int
 	, stingerBatchCounter		:: !Int
@@ -118,17 +118,19 @@ data STINGER msg as = STINGER {
 	, stingerNodesAffected		:: !IntSet
 	-- what analyses were changed in affected nodes.
 	, stingerAnalysesAffected	:: !(IntMap Int)
-	, stingerChannels		:: !(Array Int32 (Chan msg))
+	, stingerChannels		:: !(Array Int32 (Chan (Msg as)))
 	, stingerSendReceiveChannel	:: !(Chan SendReceive)
 	-- added per portion.
 	, stingerPortionEdges		:: (Array Int EdgeSet)
 	-- increments for other nodes.
 	-- a map from node index to analysis increments.
 	, stingerOthersAnalyses		:: !OtherAnalyses
+	-- a map from node index to continuations.
+	, stingerContinuationGroups	:: !(IntMap [IntSt as])
 	}
 
 -- |Monad to operate with STINGER.
-type STINGERM msg as a = StateT (STINGER msg as) IO a
+type STINGERM as a = StateT (STINGER as) IO a
 
 
 -------------------------------------------------------------------------------
@@ -177,10 +179,10 @@ vertexSetSize set = IMap.fold (+) 0 $ IMap.map ISet.size set
 
 -- |Create a STINGER structure for parallel STINGER processing.
 -- Usage: stinger <- stingerNew maxJobNodes thisNodeIndex
-stingerNew :: HLength as => Int -> Int -> Chan SendReceive -> Array Int32 (Chan msg) -> IO (STINGER msg as)
+stingerNew :: HLength as => Int -> Int -> Chan SendReceive -> Array Int32 (Chan (Msg as)) -> IO (STINGER as)
 stingerNew maxNodes nodeIndex countingChan chans = do
 	let forwardResult = undefined
-	let analysisProjection :: STINGER msg as -> as
+	let analysisProjection :: STINGER as -> as
 	    analysisProjection = error "analysisProjection result should be trated abstractly!"
 	let analysisCount = hLength $ analysisProjection forwardResult
 	let analysisHighIndex = analysisCount-1
@@ -188,16 +190,16 @@ stingerNew maxNodes nodeIndex countingChan chans = do
 		aArr <- stingerNewAnalysisSliceArray
 		return (ai,array (0,0) [(0,aArr)])
 	let result = STINGER maxNodes nodeIndex 0 IMap.empty analysisArrays
-			ISet.empty IMap.empty chans countingChan (error "no portion edges!") IMap.empty
+			ISet.empty IMap.empty chans countingChan (error "no portion edges!") IMap.empty IMap.empty
 	return (result `asTypeOf` forwardResult)
 	where
 
-stingerCountReceived :: STINGERM msg as ()
+stingerCountReceived :: STINGERM as ()
 stingerCountReceived = do
 	countChan <- liftM stingerSendReceiveChannel get
 	liftIO $ writeChan countChan $ Received 1
 
-stingerCountSent :: Int -> STINGERM msg as ()
+stingerCountSent :: Int -> STINGERM as ()
 stingerCountSent count = do
 	nodeIndex <- liftM stingerNodeIndex get
 	countChan <- liftM stingerSendReceiveChannel get
@@ -207,7 +209,7 @@ stingerCountSent count = do
 stingerNewAnalysisSliceArray :: IO (IOUArray Int32 Int64)
 stingerNewAnalysisSliceArray = newArray (0,fromIntegral analysisSliceSize-1) 0
 
-stingerFillPortionEdges :: [(Index,Index)] -> STINGERM msg as ()
+stingerFillPortionEdges :: [(Index,Index)] -> STINGERM as ()
 stingerFillPortionEdges edges = do
 	nodeIndex <- liftM (fromIntegral . stingerNodeIndex) get
 	maxNodes <- liftM (fromIntegral . stingerMaxNodes) get
@@ -234,7 +236,7 @@ stingerFillPortionEdges edges = do
 				fromV = indexToVertex maxNodes fromI
 				toV = indexToVertex maxNodes toI
 
-stingerCommitNewPortion :: STINGERM msg as ()
+stingerCommitNewPortion :: STINGERM as ()
 stingerCommitNewPortion = do
 	st <- get
 	let portionEdges = stingerPortionEdges st
@@ -246,23 +248,24 @@ stingerCommitNewPortion = do
 	put $! st {
 		  stingerPortionEdges = error "stingerPortionEdges accessed outside of transaction."
 		, stingerEdges = IMap.unionWith vertexSetUnion latestUpdates $ stingerEdges st
+		, stingerContinuationGroups = IMap.empty
 		}
 
-stingerSplitIndex :: Index -> STINGERM msg as Vertex
+stingerSplitIndex :: Index -> STINGERM as Vertex
 stingerSplitIndex index = do
 	maxNodes <- liftM stingerMaxNodes get
 	return $ indexToVertex maxNodes index
 
-stingerVertexSetIntersection :: VertexSet -> VertexSet -> STINGERM msg as VertexSet
+stingerVertexSetIntersection :: VertexSet -> VertexSet -> STINGERM as VertexSet
 stingerVertexSetIntersection s1 s2 = return $ vertexSetIntersection s1 s2
 
-stingerVertexSetIntersectionAsIndices :: VertexSet -> VertexSet -> STINGERM msg as [Index]
+stingerVertexSetIntersectionAsIndices :: VertexSet -> VertexSet -> STINGERM as [Index]
 stingerVertexSetIntersectionAsIndices s1 s2 = do
 	maxNodes <- liftM stingerMaxNodes get
 	let isection = vertexSetIntersection s1 s2
 	return $ map (vertexToIndex maxNodes) $ vertexSetToList isection
 
-stingerEdgeExists :: Int -> Vertex -> Vertex -> STINGERM msg as Bool
+stingerEdgeExists :: Int -> Vertex -> Vertex -> STINGERM as Bool
 stingerEdgeExists edgeIndex start end
 	| start == end = return True
 	| otherwise = do
@@ -285,7 +288,7 @@ stingerEdgeExists edgeIndex start end
 ---}
 	return r
 
-stingerGetEdgeSet :: Int -> Vertex -> STINGERM msg as VertexSet
+stingerGetEdgeSet :: Int -> Vertex -> STINGERM as VertexSet
 stingerGetEdgeSet edgeInPortion vertex = do
 	let localIndex = vertexIndex vertex
 	st <- get
@@ -295,11 +298,11 @@ stingerGetEdgeSet edgeInPortion vertex = do
 	let resultEdges = IMap.findWithDefault vertexSetEmpty localIndex prevEdges
 	return $ IMap.unionWith ISet.union startEdges resultEdges
 
---stingerGetEdges :: Int -> Index -> STINGERM msg as [Index]
+--stingerGetEdges :: Int -> Index -> STINGERM as [Index]
 --stingerGetEdges edgeIndex vertex = do
 --	liftM Set.toList $ stingerGetEdgeSet edgeIndex vertex
 
-stingerGrowAnalysisArrays :: Int32 -> STINGERM msg as ()
+stingerGrowAnalysisArrays :: Int32 -> STINGERM as ()
 stingerGrowAnalysisArrays newMaxIndex = do
 	analyses <- liftM stingerAnalyses get
 	let (lowA, highA) = bounds analyses
@@ -313,7 +316,7 @@ stingerGrowAnalysisArrays newMaxIndex = do
 		return (ai,array (lowAA, newMaxIndex) (assocs analysisArrays ++ addedArrays))
 	modify $! \st -> st { stingerAnalyses = array (lowA, highA) analyses' }
 
-stingerGetAnalysisArrayIndex :: Int32 -> Int32 -> STINGERM msg as (Int32,IOUArray Int32 Int64)
+stingerGetAnalysisArrayIndex :: Int32 -> Int32 -> STINGERM as (Int32,IOUArray Int32 Int64)
 stingerGetAnalysisArrayIndex analysisIndex localIndex = do
 	let indexOfSlice = shiftR localIndex analysisSliceSizeShift
 	analysisArrays <- liftM ((! analysisIndex) . stingerAnalyses) get
@@ -326,21 +329,21 @@ stingerGetAnalysisArrayIndex analysisIndex localIndex = do
 			let sliceArray = analysisArrays ! indexOfSlice
 			return (localIndex .&. fromIntegral analysisSliceSizeMask, sliceArray)
 
-stingerGetAnalysis :: Int -> Index -> STINGERM msg as Int64
+stingerGetAnalysis :: Int -> Index -> STINGERM as Int64
 stingerGetAnalysis analysisIndex index = do
 	error "stingerGetAnalysis does not distinguish between local and not-local indices!!!"
 	localIndex <- stingerIndexToLocal index
 	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
 	liftIO $ readArray sliceArray sliceIndex
 
-stingerSetAnalysis :: Int -> Index -> Int64 -> STINGERM msg as ()
+stingerSetAnalysis :: Int -> Index -> Int64 -> STINGERM as ()
 stingerSetAnalysis analysisIndex index value = do
 	error "stingerSetAnalysis does not distinguish between local and not-local indices!!!"
 	localIndex <- stingerIndexToLocal index
 	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
 	liftIO $ writeArray sliceArray sliceIndex value
 
-stingerIncrementAnalysis :: Int -> Index -> Int64 -> STINGERM msg as ()
+stingerIncrementAnalysis :: Int -> Index -> Int64 -> STINGERM as ()
 stingerIncrementAnalysis analysisIndex index 0 = return ()	-- cheap no-op.
 stingerIncrementAnalysis analysisIndex index incr = do
 	local <- stingerIndexToLocal index
@@ -379,7 +382,7 @@ stingerIncrementAnalysis analysisIndex index incr = do
 			liftIO $ putStrLn $ mainMsg ++"\n"++ postponedList
 ---}
 
-stingerBulkIncrementAnalysis :: Int -> VertexSet -> Int64 -> STINGERM msg as ()
+stingerBulkIncrementAnalysis :: Int -> VertexSet -> Int64 -> STINGERM as ()
 stingerBulkIncrementAnalysis analysisIndex vertices 0 = return ()
 stingerBulkIncrementAnalysis analysisIndex vertices incr = do
 	thisNode <- liftM (fromIntegral . stingerNodeIndex) get
@@ -410,29 +413,29 @@ stingerBulkIncrementAnalysis analysisIndex vertices incr = do
 		}
 	return ()
 
-stingerGetOtherAnalyses :: STINGERM msg as [(Int32,AnalysesMap)]
+stingerGetOtherAnalyses :: STINGERM as [(Int32,AnalysesMap)]
 stingerGetOtherAnalyses = do
 	liftM (IMap.toList . stingerOthersAnalyses) get
 
-stingerIndexToLocal :: Index -> STINGERM msg as Int32
+stingerIndexToLocal :: Index -> STINGERM as Int32
 stingerIndexToLocal index = do
 	maxNodes <- liftM stingerMaxNodes get
 	return $ fromIntegral $ index `div` fromIntegral maxNodes
 
-stingerIndexToNodeIndex :: Index -> STINGERM msg as Int32
+stingerIndexToNodeIndex :: Index -> STINGERM as Int32
 stingerIndexToNodeIndex index = do
 	maxNodes <- liftM stingerMaxNodes get
 	return $ fromIntegral $ index `mod` fromIntegral maxNodes
 
-stingerCurrentNodeIndex :: STINGERM msg as Int32
+stingerCurrentNodeIndex :: STINGERM as Int32
 stingerCurrentNodeIndex = liftM (fromIntegral . stingerNodeIndex) get
 
-stingerLocalIndex :: Index -> STINGERM msg as Bool
+stingerLocalIndex :: Index -> STINGERM as Bool
 stingerLocalIndex index = do
 	nodeIndex <- stingerIndexToNodeIndex index
 	liftM (nodeIndex ==) stingerCurrentNodeIndex
 
-stingerLocalVertex :: Vertex -> STINGERM msg as Bool
+stingerLocalVertex :: Vertex -> STINGERM as Bool
 stingerLocalVertex vertex = do
 	liftM ((vertexNode vertex ==) . fromIntegral) stingerCurrentNodeIndex
 
@@ -444,7 +447,7 @@ stingerLocalVertex vertex = do
 --   2. local job for (v1,v2) == local job for (v2,v1)
 -- It is possible for those properties to do not hold for completely
 -- local or completely external pair.
-stingerLocalJob :: Vertex -> Vertex -> STINGERM msg as Bool
+stingerLocalJob :: Vertex -> Vertex -> STINGERM as Bool
 stingerLocalJob v1' v2' = do
 	let n1 = vertexNode v1
 	let n2 = vertexNode v2
@@ -456,7 +459,7 @@ stingerLocalJob v1' v2' = do
 		v1 = min v1' v2'
 		v2 = max v1' v2'
 
-stingerMergeIncrements :: AnalysesMap -> STINGERM msg as ()
+stingerMergeIncrements :: AnalysesMap -> STINGERM as ()
 stingerMergeIncrements increments = do
 {-
 	st <- get
@@ -480,17 +483,33 @@ stingerMergeIncrements increments = do
 		  stingerNodesAffected = ISet.union (IMap.keysSet increments) $ stingerNodesAffected st
 		}
 
-stingerSendToNode :: Int32 -> msg -> STINGERM msg as ()
+stingerSendToNode :: Int32 -> Msg as -> STINGERM as ()
 stingerSendToNode nodeIndex msg = do
 	nodeChan <- liftM ((!nodeIndex) . stingerChannels) get
 	liftIO $ writeChan nodeChan msg
 
-stingerSendToNodeOfVertex :: Vertex -> msg -> STINGERM msg as ()
+stingerSendToNodeOfVertex :: Vertex -> Msg as -> STINGERM as ()
 stingerSendToNodeOfVertex vertex msg = do
 	stingerSendToNode (vertexNode vertex) msg 
 
+stingerGroupContinuations :: Vertex -> IntSt as -> STINGERM as ()
+stingerGroupContinuations vertex contState = do
+	let upd v = Just $ case v of
+		Just xs -> contState : xs
+		Nothing -> [contState]
+	modify $! \st -> st {
+		  stingerContinuationGroups = IMap.alter
+			(\v -> fmap (contState:) v `mplus` return [contState])
+			(vertexNode vertex) $ stingerContinuationGroups st
+		}
+
+stingerDistributeContinuations :: STINGERM as ()
+stingerDistributeContinuations = do
+	nodesGroups <- liftM (IMap.toList . stingerContinuationGroups) get
+	forM_ nodesGroups $ \(n,g) -> stingerSendToNode n (ContinueIntersection g)
+
 -- |Get analyses for no more than 100 affected vertices.
-stingerGetAffectedAnalyses :: STINGERM msg as [(Index,VertexAnalyses)]
+stingerGetAffectedAnalyses :: STINGERM as [(Index,VertexAnalyses)]
 stingerGetAffectedAnalyses = do
 	st <- get
 	let affected = take 100 $ ISet.toList $ stingerNodesAffected st
@@ -504,7 +523,7 @@ stingerGetAffectedAnalyses = do
 			return (IMap.singleton (fromIntegral ai) x)
 		return (toGlobal localIndex, analyses)
 
-stingerClearAffected :: STINGERM msg as ()
+stingerClearAffected :: STINGERM as ()
 stingerClearAffected = modify $! \st -> st { stingerNodesAffected = ISet.empty }
 
 -------------------------------------------------------------------------------
@@ -615,7 +634,7 @@ data Msg as =
 		-- portion number and edges array
 		Portion	Int (Array Int Index) (Chan ())
 	|	AtomicIncrement	Int AnalysesMap
-	|	ContinueIntersection (IntSt as)
+	|	ContinueIntersection [IntSt as]
 	|	GetAffected (Chan [(Index,IntMap Int64)])
 	|	Stop (Chan Int)
 
@@ -647,9 +666,9 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 				stingerMergeIncrements changes
 				stingerCountReceived
 				receiveLoop n
-			ContinueIntersection env -> do
-				interpret env
-				receiveLoop (n-1)
+			ContinueIntersection envs -> do
+				forM_ envs interpret
+				receiveLoop (n-length envs)
 			msg -> do
 {-
 				liftIO $ putStrLn "resending."
@@ -672,6 +691,7 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 					return $! n + incr
 				count <- foldM work 0 $ zip [0..] es
 --				liftIO $ putStrLn $ "Need to receive "++show count++" msgs @"++show nodeIndex
+				stingerDistributeContinuations
 				receiveLoop count
 --				liftIO $ putStrLn $ "Sending others' increments."
 				sendOtherIncrements pn
@@ -701,7 +721,7 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 		pairs (a:b:abs) = (a,b) : pairs abs
 		pairs _ = []
 
-sendOtherIncrements :: Int -> STINGERM (Msg as) as ()
+sendOtherIncrements :: Int -> STINGERM as ()
 sendOtherIncrements pn = do
 	increments <- stingerGetOtherAnalyses
 --	liftIO $ putStrLn $ "Others increments: "++show increments
@@ -709,7 +729,7 @@ sendOtherIncrements pn = do
 		stingerSendToNode (fromIntegral node) (AtomicIncrement pn incrs)
 	stingerCountSent $ length increments
 
-workOnEdge :: Analysis as as -> Int -> Index -> Index -> STINGERM (Msg as) as Int
+workOnEdge :: Analysis as as -> Int -> Index -> Index -> STINGERM as Int
 workOnEdge analysis edgeIndex fromIndex toIndex = do
 	fromVertex <- stingerSplitIndex fromIndex
 	toVertex <- stingerSplitIndex toIndex
@@ -749,11 +769,11 @@ workOnEdge analysis edgeIndex fromIndex toIndex = do
 		(_,_,_, True) -> return 0
 	return n
 
-insertAndAnalyzeSimpleSequential :: Analysis as' as -> [(Index, Index)] -> STINGERM msg as ()
+insertAndAnalyzeSimpleSequential :: Analysis as' as -> [(Index, Index)] -> STINGERM as ()
 insertAndAnalyzeSimpleSequential stack edges =
 	error "insertAndAnalyzeSimpleSequential!!!"
 
-runStack :: Analysis as as -> Int -> Index -> Index -> STINGERM (Msg as) as ()
+runStack :: Analysis as as -> Int -> Index -> Index -> STINGERM as ()
 runStack (Analysis startV endV _ action) i start end = do
 --	liftIO $ putStrLn $ "statements to interpret:"
 --	liftIO $ putStrLn $ show actionStatements
@@ -1008,13 +1028,13 @@ data IntSt as = IntSt {
 	, isConts	:: ![AnStatList as]
 	}
 
-type AIM as a = StateT (IntSt as) (StateT (STINGER (Msg as) as) IO) a
+type AIM as a = StateT (IntSt as) (StateT (STINGER as) IO) a
 
 interpretInitialEnv :: Int -> AnStatList as -> IntSt as
 interpretInitialEnv edgeIndex actions =
 	IntSt (IMap.empty) edgeIndex [actions]
 
-interpret :: EnabledAnalyses as as => IntSt as -> STINGERM (Msg as) as ()
+interpret :: EnabledAnalyses as as => IntSt as -> STINGERM as ()
 interpret env = flip evalStateT env $ do
 	interpretStatements
 
@@ -1104,7 +1124,7 @@ interpretIntersectionBulkOps a b ops = do
 			st <- get
 			let continueStat = ASContinueEdgeIsectBulk ourEdges destIndex ops
 			let sendSt = continueStat `seq` st { isConts = [continueStat] : isConts st }
-			lift $ stingerSendToNodeOfVertex destIndex $! ContinueIntersection sendSt
+			lift $ stingerGroupContinuations destIndex $! sendSt
 			-- stop interpreting here. It will be continued on another node.
 			modify $ \st -> st { isConts = [] }
 {-
@@ -1158,7 +1178,7 @@ interpretEdgesIntersection a b aN bN stats = do
 			st <- get
 			let continueStat = ASContinueEdgeIsect ourEdges aN bN destIndex stats
 			let sendSt = st { isConts = [continueStat] : isConts st }
-			lift $ stingerSendToNodeOfVertex destIndex $ ContinueIntersection sendSt
+			lift $ stingerGroupContinuations destIndex sendSt
 			-- stop interpreting here. It will be continued on another node.
 			modify $ \st -> st { isConts = [] }
 {-
