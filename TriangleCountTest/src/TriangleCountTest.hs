@@ -20,6 +20,7 @@ import System.Exit
 import System.IO
 
 import qualified G500 as G500
+import qualified G500.Read as GR
 
 import STINGER
 import STINGER.TriangleCount
@@ -36,45 +37,7 @@ import OneToOneGraphGenerator
 testDataReading :: String -> Int -> IO (IO (Maybe (Array Int Index)))
 testDataReading fname batchSize = do
 	h <- openBinaryFile fname ReadMode
-	-- two vertices per edge, 8 bytes per Int64. !!! HACK !!!
-	buf <- newArray (0,bytesCount-1) 0
-	return $ graph500Reader h buf
-	where
-		vertexSize = 8
-		edgeSize = 2*vertexSize
-		bytesCount = edgeSize*batchSize
-		edgesToArrays [] = []
-		edgesToArrays xs = frontEdgesArray : edgesToArrays rest
-			where
-				(front, rest) = splitAt batchSize xs
-				frontEdgeNodes = unpair front
-				nFrontNodes = length frontEdgeNodes
-				unpair [] = []
-				unpair ((a,b) : abs) = a : b : unpair abs
-				frontEdgesArray =
-					listArray (0,nFrontNodes-1) frontEdgeNodes
-		gen ref = do
-			xs <- readIORef ref
-			case xs of
-				[] -> return Nothing
-				(a:as) -> do
-					writeIORef ref as
-					return $ Just a
-		graph500Reader h buf = do
-			eof <- hIsEOF h
-			if eof then return Nothing
-				else readBatchPortion h buf
-		readVertexIndex :: Array Int Word8 -> Int -> Index
-		readVertexIndex a i = foldr (\x i -> i*256 + fromIntegral x) 0 $
-			map (a!) [i*vertexSize..(i+1)*vertexSize-1]
-		readBatchPortion :: Handle -> IOUArray Int Word8 -> IO (Maybe (Array Int Index))
-		readBatchPortion h buf = do
-			n <- hGetArray h buf bytesCount
-			bytes <- freeze buf
-			let edgesCount = n `div` edgeSize
-			let indices = map (readVertexIndex bytes) [0..edgesCount*2-1]
-			let pairs = listArray (0, edgesCount*2-1) indices
-			return $ Just pairs
+	GR.mkGraph500Reader h batchSize
 
 -------------------------------------------------------------------------------
 -- Reading the arguments.
