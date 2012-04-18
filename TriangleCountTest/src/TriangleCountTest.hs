@@ -11,6 +11,7 @@ import Control.Monad
 import Control.Monad.State
 import Data.Array
 import Data.Array.IO
+import Data.Array.Unboxed
 import Data.Bits
 import Data.IORef
 import Data.List
@@ -34,10 +35,21 @@ import OneToOneGraphGenerator
 -------------------------------------------------------------------------------
 -- Generating test data.
 
-testDataReading :: String -> Int -> IO (IO (Maybe (Array Int Index)))
+testDataReading :: String -> Int -> IO (Integer, (IO (Maybe (UArray Int Index))))
 testDataReading fname batchSize = do
 	h <- openBinaryFile fname ReadMode
-	GR.mkGraph500Reader h batchSize
+	nEdges <- computeEdgesCount h
+	gen <- GR.mkGraph500Reader h batchSize
+	return (computeBatchThreshold nEdges, gen)
+	where
+		-- !!!HACKHACK!!!
+		-- it thinks we always will use Int64 for vertex index.
+		computeEdgesCount handle = do
+			sz <- hFileSize handle
+			return $ sz `div` (8*2)
+		computeBatchThreshold nEdges = threshold - threshold `mod` fromIntegral batchSize
+			where
+				threshold = nEdges - 80000
 
 -------------------------------------------------------------------------------
 -- Reading the arguments.
@@ -116,7 +128,7 @@ stingerArgs = do
 
 main = do
 	(fn, stingerArgs) <- readArguments
-	gen <- testDataReading fn (saBatchSize stingerArgs)
+	(threshold, gen) <- testDataReading fn (saBatchSize stingerArgs)
 	let maxNodes = saNodes stingerArgs
-	runAnalysesStack maxNodes gen triangleCount
+	runAnalysesStack threshold maxNodes gen triangleCount
 

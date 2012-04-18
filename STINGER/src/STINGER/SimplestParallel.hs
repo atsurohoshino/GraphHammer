@@ -56,6 +56,7 @@ import Control.Monad.State
 import Control.Monad.STM
 import Data.Array
 import Data.Array.IO
+import qualified Data.Array.Unboxed as UA
 import Data.Bits
 import Data.Int
 import Data.IORef
@@ -65,6 +66,7 @@ import Data.Maybe (fromMaybe, catMaybes)
 import qualified Data.Set as Set
 import Data.Word
 import System.IO
+import System.Mem (performGC)
 import System.Time
 
 import G500.Index
@@ -533,9 +535,9 @@ stingerClearAffected = modify $! \st -> st { stingerNodesAffected = ISet.empty }
 -- Its' parameters:
 --  - function to obtain edges to insert.
 --  - a stack of analyses to perform.
-runAnalysesStack :: (HLength as, EnabledAnalyses as as) => Int -> IO (Maybe (Array Int Index)) ->
+runAnalysesStack :: (HLength as, EnabledAnalyses as as) => Integer -> Int -> IO (Maybe (UA.UArray Int Index)) ->
 	Analysis as as -> IO ()
-runAnalysesStack maxNodes receiveChanges analysesStack
+runAnalysesStack threshold maxNodes receiveChanges analysesStack
 	| analysesParallelizable analysesStack = do
 	putStrLn $ "Max nodes "++show maxNodes
 	chans <- liftM (listArray (0,fromIntegral maxNodes-1)) $ mapM (const newChan) [0..maxNodes - 1]
@@ -543,7 +545,8 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 	forM_ [0..maxNodes-1] $ \n -> do
 		forkIO $ workerThread analysesStack maxNodes n sendReceiveCountChan chans
 	startTime <- getClockTime
-	(computationPicosecs, n) <- runLoop 0 sendReceiveCountChan chans 0 0
+	(computationPicosecs,lastCompPicosecs,lastCompCount, n) <-
+		runLoop 0 0 sendReceiveCountChan chans 0 0
 	endTime <- getClockTime
 	let timeDiff = diffClockTimes endTime startTime
 	let picoSecs = 1000000000000
@@ -554,6 +557,8 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 	putStrLn $ "Total time in seconds: "++show (diffPicoSecs / picoSecs)
 	let computationSeconds = fromIntegral computationPicosecs / picoSecs
 	putStrLn $ "Edges per second for computation time: "++show (fromIntegral n / computationSeconds)
+	let lastCompSeconds = fromIntegral lastCompPicosecs / picoSecs
+	putStrLn $ "Edges per second for computation time of last "++show lastCompCount++" edges: "++show (fromIntegral lastCompCount / lastCompSeconds)
 	putStrLn $ "Computation time in seconds: "++show computationSeconds
 	return ()
 	where
@@ -562,7 +567,7 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 			return $ seconds * 1000000000000 + picoseconds
 		pairs (x:y:xys) = (x,y) : pairs xys
 		pairs _ = []
-		runLoop time sendReceiveCountChan chans pn n = do
+		runLoop time lastEdgesTime sendReceiveCountChan chans pn n = do
 			edges <- liftIO receiveChanges
 			case edges of
 				Nothing -> do
@@ -572,11 +577,14 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 							writeChan ch (Stop answer)
 						forM_ (elems chans) $ \_ -> do
 							readChan answer
-					return (time,n)
+					return (time,lastEdgesTime,n-threshold,n)
 				Just edges -> do
 					start <- getClockPicoseconds
-					let (low,up) = bounds edges
+					let (low,up) = UA.bounds edges
 					let count = div (up-low+1) 2
+					if n >= threshold && n < threshold + fromIntegral count
+						then performGC
+						else return ()
 					answer <- newChan
 					-- seed the work.
 					forM_ (elems chans) $ \ch -> writeChan ch (Portion pn edges answer)
@@ -588,7 +596,12 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 					detectSilenceAndDumpState sendReceiveCountChan maxNodes (elems chans)
 --					putStrLn $ "Done waiting ("++show pn++")."
 					end <- getClockPicoseconds
-					runLoop (time + end - start) sendReceiveCountChan chans (pn+1) (n+count)
+					let delta = end - start
+					let compTime = time + delta
+					let lastEdgesTime'
+						| n >= threshold = lastEdgesTime + delta
+						| otherwise = lastEdgesTime
+					runLoop compTime lastEdgesTime' sendReceiveCountChan chans (pn+1) (n+fromIntegral count)
 		detectSilence countChan nodesNotSent sentReceivedBalance
 			| nodesNotSent < 0 = error $ "nodesNotSent "++show nodesNotSent++"!!!"
 			| nodesNotSent > 0 = continue
@@ -625,14 +638,14 @@ runAnalysesStack maxNodes receiveChanges analysesStack
 		performInsertionAndAnalyses edgeList = do
 			insertAndAnalyzeSimpleSequential analysesStack edgeList
 
-runAnalysesStack maxNodes receiveChanges analysesStack = do
+runAnalysesStack threshold maxNodes receiveChanges analysesStack = do
 	error "Non-parallelizable analyses aren't supported."
 
 -- |Messages the worker thread can receive.
 data Msg as = 
 		-- edge changes.
 		-- portion number and edges array
-		Portion	Int (Array Int Index) (Chan ())
+		Portion	Int (UA.UArray Int Index) (Chan ())
 	|	AtomicIncrement	Int AnalysesMap
 	|	ContinueIntersection [IntSt as]
 	|	GetAffected (Chan [(Index,IntMap Int64)])
@@ -683,7 +696,7 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 		case msg of
 			Portion pn edges answer -> do
 --				liftIO $ putStrLn $ "Portion "++show pn++" @"++show nodeIndex
-				let es = pairs $ Data.Array.elems edges
+				let es = pairs $ UA.elems edges
 				stingerFillPortionEdges es
 				stingerClearAffected
 				let work n (i,(f,t)) = do

@@ -51,6 +51,7 @@ import Control.Monad
 import Control.Monad.State
 import Data.Array
 import Data.Array.IO
+import Data.Array.Unboxed
 import Data.Int
 import Data.IORef
 import qualified STINGER.IntMap as Map
@@ -165,7 +166,7 @@ stingerClearAffected = modify $! \st -> st { stingerNodesAffected = Set.empty }
 -- Its' parameters:
 --  - function to obtain edges to insert.
 --  - a stack of analyses to perform.
-runAnalysesStack :: Index -> IO (Maybe (Array Int Index)) ->
+runAnalysesStack :: Index -> IO (Maybe (UArray Int Index)) ->
 	Analysis as as -> IO ()
 runAnalysesStack maxVertices receiveChanges analysesStack = do
 	s <- stingerNew maxVertices
@@ -187,7 +188,7 @@ runAnalysesStack maxVertices receiveChanges analysesStack = do
 			case edges of
 				Nothing -> return n
 				Just edges -> do
-					let es = pairs $ Data.Array.elems edges
+					let es = pairs $ Data.Array.Unboxed.elems edges
 					stingerClearAffected
 					performInsertionAndAnalyses es
 					stingerDumpState
