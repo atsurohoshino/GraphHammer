@@ -57,7 +57,7 @@ Executable GraphHammerTest
 
   
   -- Modules not exported by this package.
-  Other-modules:       Control.Graph.Tests.G500Benchmark
+  Other-modules:       Control.Graph.Tests.G500Benchmark, Control.Graph.Tests.TriangleCount, Control.Graph.Tests.VertexDegree
   
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:         

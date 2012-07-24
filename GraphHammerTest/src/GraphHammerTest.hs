@@ -11,6 +11,7 @@ import Control.Graph.Interface
 import Control.Graph.HiPerQ
 import qualified Control.Graph.Tests.G500Benchmark as G500Benchmark (runTest)
 import qualified Control.Graph.Tests.VertexDegree as VertexDegree (runTest)
+import qualified Control.Graph.Tests.TriangleCount as TriangleCount (runTest)
 
 data Backend where
   Backend :: Interface a => a -> Backend
@@ -37,7 +38,8 @@ graphDataFile = "g500_testdata"
 setupTests :: IO Test
 setupTests = do generateWriteFile graphDataFile Graph500 10 16
                 return $ TestList [makeTests graphDataFile "VertexDegree" VertexDegree.runTest,
-                                   makeTests graphDataFile "G500Benchmark" G500Benchmark.runTest]
+                                   makeTests graphDataFile "G500Benchmark" G500Benchmark.runTest,
+                                   makeTests {-ignored-}undefined "TriangleCount" TriangleCount.runTest]
 
 main = 
    do tests <- setupTests

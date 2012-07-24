@@ -6,13 +6,15 @@
 
 {-# LANGUAGE DeriveDataTypeable #-}
 
-module Main where
+module Control.Graph.Tests.TriangleCount (runTest) where
 
 import Control.Monad
 import Data.Char
 import Data.List
-
-import LanGra
+import Data.Int
+import LanGra hiding (getAnalysisResult)
+import Control.Graph.Interface
+import Data.Array.Unboxed (array,UArray)
 
 data TriangleCount = TriangleCount deriving (Show, Typeable)
 
@@ -50,21 +52,35 @@ triangleCountUpdate added f t = do
 -------------------------------------------------------------------------------
 -- Simple test harness.
 
+edgesToArray :: [(Index,Index)] -> UArray Int Index
+edgesToArray edges =
+         let asalist = listify edges
+             range = (0,length asalist-1)
+          in array range (zip [0..] asalist)
+   where listify [] = []
+         listify ((afrom, ato):rest) = afrom:ato:(listify rest)
+
 -- |Various test cases to test
-test :: Int -> Int -> Int -> IO ()
-test n m ps = do
+test :: Interface a => QHandle a -> Int -> Int -> Int -> IO [Int64]
+test qh n m ps = do
 	putStrLn $ "Testing with number of vertices "++show n++", number of neighbours - 1 "++show m++", and update portion size "++show ps++"."
 	putStrLn $ "Graph "++show graph
 	putStrLn $ "Updates "++show updates
-	runAn afterLoad triangleCountUpdate Nothing graph updates
+	runAnalysis qh afterLoad
+	forM_ values 
+           (addAnalyzeEdges qh triangleCountUpdate)
+	retrieveAll qh TriangleCount
 	where
+		values :: [UArray Int Index]
+                values = map edgesToArray allUpdates
+                     where allUpdates = graph : updates
+                graph :: [(Index,Index)]
 		graph = [(i,i+1) | i <- map fromIntegral [0..n-2]]
 		split [] = []
 		split xs = portion : split rest
 			where
 				(portion,rest) = splitAt ps xs
-		updates :: Updates
-		updates = split [((i,min (fromIntegral n-1) (i+d)), True) | i <- map fromIntegral [0..n-1], d <- map fromIntegral [1..m]]
+		updates = split [((i,min (fromIntegral n-1) (i+d))) | i <- map fromIntegral [0..n-1], d <- map fromIntegral [1..m]]
 
 -------------------------------------------------------------------------------
 -- "Twitter" test harness.
@@ -157,11 +173,18 @@ socketPacketPocket = toWords [
 	, "    Quickly turn off the computer and be sure to tell your mom!"
 	]
 
-testText :: String -> TextWords -> IO ()
-testText msg textWords = do
-	putStrLn $ "As if poets tweetted: "++msg
-	runAn afterLoad triangleCountUpdate (Just indexToWord) [] updates
-	return ()
+retrieveAll :: (Interface a, Typeable t) => QHandle a -> t -> IO [Int64]
+retrieveAll qh t =
+  do maxIndex <- getMaxVertexIndex qh
+     forM [0..maxIndex] $ 
+         (getAnalysisResult qh t)
+
+testText :: Interface a => QHandle a -> String -> TextWords -> IO [Int64]
+testText qh msg textWords = do
+	runAnalysis qh afterLoad
+	forM updates $ \update -> do
+           addAnalyzeEdges qh triangleCountUpdate (edgesToArray update)
+	retrieveAll qh TriangleCount
 	where
 		allWords :: [String]
 		allWords = nub $ concat textWords
@@ -171,16 +194,21 @@ testText msg textWords = do
 			Nothing -> error $ "word "++show s++" is not in the allWords list."
 		indexToWord :: Index -> String
 		indexToWord i = allWords !! fromIntegral i
-		makeUpdateFromWords words = [((i,j), True) | i <- indices, j <- indices]
-			where
-				indices = map wordIndex words
+		makeUpdateFromWords words = [((fromIntegral i,j)) | i <- indices, j <- indices]
+                      where
+		      indices = map wordIndex words
+                range updates = (minimum $ map fst updates, maximum $ map fst updates)
 		updates = map makeUpdateFromWords textWords
 
 -------------------------------------------------------------------------------
 -- Running them all in executable.
 
-main = do
-	let n = 3
-	sequence_ [test n m ps | m <- [1,2], ps <- [5{-,10,20-}]]
-	testText "To be or not to be" toBeOrNotToBe
-	testText "Socket packet pocket" socketPacketPocket
+runTest :: Interface a => a -> FilePath -> IO ([Int64],[Int64],[[Int64]])
+runTest interface _ = 
+  do qh <- newQHandle interface
+     res1 <- testText qh "To be or not to be" toBeOrNotToBe
+     res2 <- testText qh "Socket packet pocket" socketPacketPocket
+     res3 <- sequence [test qh 3 m ps | m <- [1,2], ps <- [5]]
+     closeQHandle qh
+     return (res1,res2,res3)
+
