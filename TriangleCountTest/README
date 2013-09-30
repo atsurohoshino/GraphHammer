@@ -1,7 +1,7 @@
 Triangle Count test
 -------------------
 
-TriangleCountTest is a standalone program for our STINGER
+TriangleCountTest is a standalone program for GraphHammer
 implementation. It performs Triangle Count streaming analysis
 on specified graph data.
 
@@ -10,7 +10,7 @@ Building
 
 "cabal install --bindir=<your program dir>" should suffice.
 
-It depends on STINGER and Graph500.
+It depends on GraphHammer and Graph500.
 
 Usage
 -----

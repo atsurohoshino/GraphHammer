@@ -1,4 +1,6 @@
 -- |TriangleCountTest
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
 -- Testing STINGER analyses.
 --
@@ -23,8 +25,8 @@ import System.IO
 import qualified G500 as G500
 import qualified G500.Read as GR
 
-import STINGER
-import STINGER.TriangleCount
+import GraphHammer
+import GraphHammer.TriangleCount
 
 import RectangleGraphGenerator
 import OneToOneGraphGenerator

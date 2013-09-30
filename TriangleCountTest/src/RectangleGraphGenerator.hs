@@ -1,4 +1,6 @@
 -- |SquareGraphGenerator
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
 -- A test data generator - it generates a simple rectangular planar graph
 --
@@ -9,7 +11,7 @@ module RectangleGraphGenerator(
 	, regularRectangleGraph
 ) where
 
-import STINGER
+import GraphHammer
 
 encodeIndex :: Int -> (Int, Int) -> Index
 encodeIndex nCols (i,j) = fromIntegral $ i*nCols+j

@@ -1,4 +1,6 @@
 -- |OneToOneGraphGenerator
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
 -- A test data generator - it generates a graph that connect each
 -- node to any each other node.
@@ -11,7 +13,7 @@ module OneToOneGraphGenerator(
 	  oneToOneGraph
 ) where
 
-import STINGER
+import GraphHammer
 
 oneToOneGraph :: Bool -> Int -> [(Index,Index)]
 oneToOneGraph undirected n = edges
