@@ -1,8 +1,7 @@
-STINGER
+GraphHammer
 -------
 
-STINGER stands for "Spatio-Temporal Spatio-Temporal
-Interaction Networks and Graphs (STING) Extensible Representation".
+GraphHammer is the graph library inspired by STINGER library.
 
 This is a representation that allows for very fast analyses on Cray XMP.
 

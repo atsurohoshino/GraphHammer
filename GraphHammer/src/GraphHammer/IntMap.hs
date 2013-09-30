@@ -163,7 +163,7 @@ module GraphHammer.IntMap (
             , showTree
             , showTreeWith
 
-            -- extras for STINGER.
+            -- extras for GraphHammer.
             , unionWithSetValue
             , mapFromSetValue
             ) where

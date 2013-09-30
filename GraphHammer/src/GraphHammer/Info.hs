@@ -1,6 +1,8 @@
--- |STINGER.Info
+-- |GraphHammer.Info
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
--- Defines a classes to store and read info for STINGER edges' and vertices' information.
+-- Defines a classes to store and read info for GraphHammer edges' and vertices' information.
 --
 -- Also defines instances of those classes for unit (). It is meant as a safe way
 -- to say "no useful information". Its use as an info should not incur any cost.
@@ -30,7 +32,7 @@ class Info a where
 	-- |Decoding process.
 	decodeInfo :: EncodingType a -> a
 
--- |A class that defines "array interface" for STINGER information.
+-- |A class that defines "array interface" for GraphHammer information.
 class (Num i, Ix i, Info a) => InfoArray i a where
 	-- |A type for arrays with specified index.
 	type EncodedInfoArray i a

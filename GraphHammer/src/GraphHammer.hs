@@ -1,12 +1,12 @@
--- |STINGER.hs
--- "Spatio-Temporal Interaction Networks and Graphs (STING) Extensible Representation"
--- Top-level module that exports all things STINGER related.
-
+-- | GraphHammer.hs
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
+--
+-- Top level module for GraphHammer library
 module GraphHammer(
 	  module GraphHammer.Info
 	-- Selecting implementation to export.
 	, module GraphHammer.SimplestParallel
-	--, module STINGER.Simplest
 	) where
 
 -- Information storage and retrieval.

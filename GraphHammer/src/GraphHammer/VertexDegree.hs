@@ -1,4 +1,7 @@
--- |STINGER.VertexDegree
+-- |GraphHammer.VertexDegree
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
+--
 --
 -- Vertex degree analysis.
 

@@ -1,25 +1,28 @@
--- |STINGER.Simplest
+-- |GraphHammer.Simplest
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
--- Simplest and slowest implementation for STINGER data structure and analyses combination.
+--
+-- Simplest and slowest implementation for GraphHammer data structure and analyses combination.
 -- Is used for API prototyping.
 
 {-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
 {-# LANGUAGE IncoherentInstances, PatternGuards #-}
 
-module STINGER.Simplest(
+module GraphHammer.Simplest(
 	  Index	-- from G500.
 	-- HList
 	, Nil
 	, (:.)
 
 	-- representation exported abstractly
-	, STINGER
-	-- How to create a new STINGER.
+	, GraphHammer 
+	-- How to create a new GraphHammer.
 	, stingerNew
 
-	-- An analysis monad to create operations with STINGER.
-	, STINGERM
+	-- An analysis monad to create operations with GraphHammer.
+	, GraphHammerM
 	, runAnalysesStack
 
 	-- local values processing.
@@ -54,14 +57,14 @@ import Data.Array.IO
 import Data.Array.Unboxed
 import Data.Int
 import Data.IORef
-import qualified STINGER.IntMap as Map
-import qualified STINGER.IntSet as Set
+import qualified GraphHammer.IntMap as Map
+import qualified GraphHammer.IntSet as Set
 import Data.Word
 import System.IO
 import System.Time
 
 import G500.Index
-import STINGER.HList
+import GraphHammer.HList
 
 -------------------------------------------------------------------------------
 -- A very simple representation.
@@ -70,7 +73,7 @@ type IntMap a = Map.IntMap a
 type IntSet = Set.IntSet
 
 -- |A representation parametrized by analyses required.
-data STINGER as = STINGER {
+data GraphHammer as = GraphHammer {
 	  stingerBatchCounter	:: !Int
 	, stingerEdges		:: !(IntMap IntSet)
 	-- Results of analyses.
@@ -79,24 +82,24 @@ data STINGER as = STINGER {
 	, stingerNodesAffected	:: !IntSet
 	}
 
--- |Monad to operate with STINGER.
-type STINGERM as a = StateT (STINGER as) IO a
+-- |Monad to operate with GraphHammer.
+type GraphHammerM as a = StateT (GraphHammer as) IO a
 
 
 -------------------------------------------------------------------------------
--- Main STINGER API.
+-- Main GraphHammer API.
 
-stingerNew :: Index -> IO (STINGER as)
+stingerNew :: Index -> IO (GraphHammer as)
 stingerNew maxVertices = do
-	return $ STINGER 0 Map.empty Map.empty Set.empty
+	return $ GraphHammer 0 Map.empty Map.empty Set.empty
 
-stingerEdgeExists :: Index -> Index -> STINGERM as Bool
+stingerEdgeExists :: Index -> Index -> GraphHammerM as Bool
 stingerEdgeExists start end
 	| start == end = return True
 	| otherwise = do
 	liftM (Set.member (fromIntegral end) . Map.findWithDefault Set.empty (fromIntegral start) . stingerEdges) get
 
-stingerInsertEdge :: Index -> Index -> STINGERM as ()
+stingerInsertEdge :: Index -> Index -> GraphHammerM as ()
 stingerInsertEdge start end
 	| start == end = return ()
 	| otherwise = do
@@ -111,19 +114,19 @@ stingerInsertEdge start end
 			}
 	
 
-stingerGetEdgeSet :: Index -> STINGERM as IntSet
+stingerGetEdgeSet :: Index -> GraphHammerM as IntSet
 stingerGetEdgeSet start =
 	liftM (Map.findWithDefault Set.empty (fromIntegral start) . stingerEdges) get
 
-stingerGetEdges :: Index -> STINGERM as [Index]
+stingerGetEdges :: Index -> GraphHammerM as [Index]
 stingerGetEdges start =
 	liftM (map fromIntegral . Set.toList) $ stingerGetEdgeSet start
 
-stingerGetAnalysis :: Int -> Index -> STINGERM as Int64
+stingerGetAnalysis :: Int -> Index -> GraphHammerM as Int64
 stingerGetAnalysis analysisIndex index = 
 	liftM (Map.findWithDefault 0 (fromIntegral analysisIndex) . Map.findWithDefault Map.empty (fromIntegral index) . stingerAnalyses) get
 
-stingerSetAnalysis :: Int -> Index -> Int64 -> STINGERM as ()
+stingerSetAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
 stingerSetAnalysis analysisIndex index' value = do
 	let index = fromIntegral index'
 	modify $! \st -> let
@@ -134,7 +137,7 @@ stingerSetAnalysis analysisIndex index' value = do
 		, stingerNodesAffected = Set.insert index $ stingerNodesAffected st
 		}
 
-stingerIncrementAnalysis :: Int -> Index -> Int64 -> STINGERM as ()
+stingerIncrementAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
 stingerIncrementAnalysis analysisIndex index' incr = do
 	let index = fromIntegral index'
 	modify $! \st -> let
@@ -145,7 +148,7 @@ stingerIncrementAnalysis analysisIndex index' incr = do
 		, stingerNodesAffected = Set.insert index $ stingerNodesAffected st
 		}
 
-stingerDumpState :: STINGERM as ()
+stingerDumpState :: GraphHammerM as ()
 stingerDumpState = do
 	st <- get
 	let affected = Set.toList $ stingerNodesAffected st
@@ -159,7 +162,7 @@ stingerDumpState = do
 					putStrLn $ "    Analysis "++show a++", value "++show v
 		hFlush stdout
 
-stingerClearAffected :: STINGERM as ()
+stingerClearAffected :: GraphHammerM as ()
 stingerClearAffected = modify $! \st -> st { stingerNodesAffected = Set.empty }
 
 -- |Run the analyses stack.
@@ -196,7 +199,7 @@ runAnalysesStack maxVertices receiveChanges analysesStack = do
 		performInsertionAndAnalyses edgeList = do
 			insertAndAnalyzeSimpleSequential analysesStack edgeList
 
-insertAndAnalyzeSimpleSequential :: Analysis as' as -> [(Index, Index)] -> STINGERM as ()
+insertAndAnalyzeSimpleSequential :: Analysis as' as -> [(Index, Index)] -> GraphHammerM as ()
 insertAndAnalyzeSimpleSequential stack edges = do
 	forM_ edges $ \(start, end) -> do
 		exists <- stingerEdgeExists start end
@@ -205,7 +208,7 @@ insertAndAnalyzeSimpleSequential stack edges = do
 				runStack stack start end
 				stingerInsertEdge start end
 
-runStack :: Analysis as' as -> Index -> Index -> STINGERM as ()
+runStack :: Analysis as' as -> Index -> Index -> GraphHammerM as ()
 runStack EmptyAnalysis _ _ = return ()
 runStack (Analysis req analysis action) start end = do
 	runStack req start end
@@ -327,7 +330,7 @@ incrementAnalysisResult analysis vertex incr = do
 	addStatement $ ASAtomicIncr index vertex incr
 
 -------------------------------------------------------------------------------
--- STINGER API - values and expressions.
+-- GraphHammer API - values and expressions.
 
 -- value is assignable.
 data Asgn
@@ -417,15 +420,15 @@ infixr 1 $=
 dest $= expr = addStatement $ ASAssign dest expr
 
 -------------------------------------------------------------------------------
--- Interpreting analysis in STINGER monad.
+-- Interpreting analysis in GraphHammer monad.
 
 data IntSt = IntSt {
 	  istLocals	:: !(IntMap Int64)
 	}
 
-type AIM as a = StateT IntSt (StateT (STINGER as) IO) a
+type AIM as a = StateT IntSt (StateT (GraphHammer as) IO) a
 
-interpret :: EnabledAnalyses aas as => AnM aas a -> STINGERM as ()
+interpret :: EnabledAnalyses aas as => AnM aas a -> GraphHammerM as ()
 interpret action = evalStateT
 	(interpretStatements $ asStatements $ execState action (AnSt 0 []))
 	(IntSt Map.empty)
@@ -508,7 +511,7 @@ interpretValue value = case value of
 
 
 -------------------------------------------------------------------------------
--- STINGER analysis combination.
+-- GraphHammer analysis combination.
 
 type family RequiredAnalyses a
 

@@ -1,6 +1,9 @@
--- |STINGER.TriangleCount
+-- | GraphHammer.TriangleCount
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
--- Computing clustering coefficient (local and global) using STINGER.
+--
+-- Computing clustering coefficient (local and global) using GraphHammer.
 --
 
 {-# LANGUAGE TypeFamilies, EmptyDataDecls, TypeOperators, FlexibleInstances, MultiParamTypeClasses #-}

@@ -1,4 +1,6 @@
--- |STINGER.HList
+-- |GraphHammer.HList
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
 -- Home-brewn HList.
 

@@ -1,17 +1,19 @@
--- |STINGER.ClusteringCoefficient
+-- | GraphHammer.ClusteringCoefficient
+-- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
+-- License   : GPLv2
 --
 -- Clustering coefficient computation.
 
 {-# LANGUAGE TypeFamilies, EmptyDataDecls, TypeOperators, FlexibleInstances, MultiParamTypeClasses #-}
 
-module STINGER.ClusteringCoefficient(
+module GraphHammer.ClusteringCoefficient(
 	  ClusteringCoefficient(..)
 	, clusteringCoefficient
 	) where
 
-import STINGER
-import STINGER.TriangleCount
-import STINGER.VertexDegree
+import GraphHammer
+import GraphHammer.TriangleCount
+import GraphHammer.VertexDegree
 
 data ClusteringCoefficient = ClusteringCoefficient
 
