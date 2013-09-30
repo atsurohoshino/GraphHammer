@@ -7,6 +7,7 @@
 {-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
 {-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction, PatternGuards, BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module STINGER.SimplestParallel(
 	  Index	-- from G500.
@@ -183,18 +184,20 @@ vertexSetSize set = IMap.fold (+) 0 $ IMap.map ISet.size set
 -- Usage: stinger <- stingerNew maxJobNodes thisNodeIndex
 stingerNew :: HLength as => Int -> Int -> Chan SendReceive -> Array Int32 (Chan (Msg as)) -> IO (STINGER as)
 stingerNew maxNodes nodeIndex countingChan chans = do
-	let forwardResult = undefined
-	let analysisProjection :: STINGER as -> as
+	dummyAnalysisArrays <- liftM (array (0,0)) $ forM [0..0] $ \ai -> do
+		aArr <- stingerNewAnalysisSliceArray
+		return (ai,array (0,0) [(0,aArr)])
+	let forwardResult = STINGER maxNodes nodeIndex 0 IMap.empty dummyAnalysisArrays
+			ISet.empty IMap.empty chans countingChan (error "no portion edges!") IMap.empty IMap.empty
+	let analysisProjection :: HLength as' => STINGER as' -> as'
 	    analysisProjection = error "analysisProjection result should be trated abstractly!"
-	let analysisCount = hLength $ analysisProjection forwardResult
+	let analysisCount = hLength (analysisProjection forwardResult)
 	let analysisHighIndex = analysisCount-1
 	analysisArrays <- liftM (array (0,fromIntegral analysisHighIndex)) $ forM [0..fromIntegral analysisHighIndex] $ \ai -> do
 		aArr <- stingerNewAnalysisSliceArray
 		return (ai,array (0,0) [(0,aArr)])
-	let result = STINGER maxNodes nodeIndex 0 IMap.empty analysisArrays
-			ISet.empty IMap.empty chans countingChan (error "no portion edges!") IMap.empty IMap.empty
-	return (result `asTypeOf` forwardResult)
-	where
+	let result = forwardResult { stingerAnalyses = analysisArrays }
+	return result
 
 stingerCountReceived :: STINGERM as ()
 stingerCountReceived = do
@@ -562,6 +565,7 @@ runAnalysesStack threshold maxNodes receiveChanges analysesStack
 	putStrLn $ "Computation time in seconds: "++show computationSeconds
 	return ()
 	where
+		gcThreshold = threshold - 8000
 		getClockPicoseconds = do
 			(TOD seconds picoseconds) <- getClockTime
 			return $ seconds * 1000000000000 + picoseconds
@@ -582,8 +586,8 @@ runAnalysesStack threshold maxNodes receiveChanges analysesStack
 					start <- getClockPicoseconds
 					let (low,up) = UA.bounds edges
 					let count = div (up-low+1) 2
-					if n >= threshold && n < threshold + fromIntegral count
-						then performGC
+					if n >= gcThreshold && n < gcThreshold + fromIntegral count
+						then performGC >> putStrLn "Garbage collection."
 						else return ()
 					answer <- newChan
 					-- seed the work.
@@ -645,9 +649,9 @@ runAnalysesStack threshold maxNodes receiveChanges analysesStack = do
 data Msg as = 
 		-- edge changes.
 		-- portion number and edges array
-		Portion	Int (UA.UArray Int Index) (Chan ())
-	|	AtomicIncrement	Int AnalysesMap
-	|	ContinueIntersection [IntSt as]
+		Portion	!Int !(UA.UArray Int Index) (Chan ())
+	|	AtomicIncrement	!Int !AnalysesMap
+	|	ContinueIntersection ![IntSt as]
 	|	GetAffected (Chan [(Index,IntMap Int64)])
 	|	Stop (Chan Int)
 
@@ -819,8 +823,8 @@ instance AnalysisValue Int64 where
 
 data BulkOp as where
 	BulkIncr :: Int -> Value _a Index -> Value _b Index -> Value _c Int64 -> BulkOp as
-	CountIncr :: (Num a, AnalysisValue a) => Value Asgn a -> Value _c a -> BulkOp as
-	
+	CountIncr :: (Show a, Num a, AnalysisValue a) => Value Asgn a -> Value _c a -> BulkOp as
+
 
 data AnStatement as where
 	-- destination and value
@@ -1011,7 +1015,7 @@ localValue def = do
 	return v
 
 infixl 6 +., -.
-(+.), (-.) :: Num v => Value _a v -> Value _b v -> Value Composed v
+(+.), (-.) :: (Show v, Num v) => Value _a v -> Value _b v -> Value Composed v
 a +. b = ValueBin Plus a b
 a -. b = ValueBin Minus a b
 a *. b = ValueBin Mul a b
@@ -1139,7 +1143,7 @@ interpretIntersectionBulkOps a b ops = do
 			let sendSt = continueStat `seq` st { isConts = [continueStat] : isConts st }
 			lift $ stingerGroupContinuations destIndex $! sendSt
 			-- stop interpreting here. It will be continued on another node.
-			modify $ \st -> st { isConts = [] }
+			modify $! \st -> st { isConts = [] }
 {-
 			thisNode <- lift stingerCurrentNodeIndex
 			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
@@ -1193,7 +1197,7 @@ interpretEdgesIntersection a b aN bN stats = do
 			let sendSt = st { isConts = [continueStat] : isConts st }
 			lift $ stingerGroupContinuations destIndex sendSt
 			-- stop interpreting here. It will be continued on another node.
-			modify $ \st -> st { isConts = [] }
+			modify $! \st -> st { isConts = [] }
 {-
 			thisNode <- lift stingerCurrentNodeIndex
 			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
@@ -1333,11 +1337,16 @@ data AnalysisNotEnabled a
 
 class EnabledAnalysis a as
 
+{-
+
 class EnabledBool b a as
 instance TyCast TRUE b => EnabledBool b  a (a  :. as)
 instance (EnabledAnalysis a as) => EnabledBool FALSE a (a' :. as)
 
 instance (EnabledBool b a (a' :. as), TyEq b a a') => EnabledAnalysis a (a' :. as)
+-}
+instance EnabledAnalysis a (a :. as)
+instance EnabledAnalysis a as => EnabledAnalysis a (a' :. as)
 
 class EnabledAnalyses as eas
 
@@ -1388,6 +1397,12 @@ derivedAnalysis (Analysis startV endV startI requiredActions) analysis edgeInser
 class EnabledAnalysis a as => AnalysisIndex a as where
 	analysisIndex :: a -> as -> Int
 
+instance AnalysisIndex a as => AnalysisIndex a (a' :. as) where
+	analysisIndex a list = analysisIndex a (hTail list)
+instance HLength as => AnalysisIndex a (a :. as) where
+	analysisIndex _ list = hLength (hTail list)
+
+{-
 class AnalysisIndexBool b a as | a as -> b where
 	analysisAtHead :: a -> as -> b
 	analysisIndexBool :: b -> a -> as -> Int
@@ -1400,4 +1415,4 @@ instance (AnalysisIndex a as) => AnalysisIndexBool FALSE a (a' :. as) where
 
 instance (EnabledBool b a (a' :. as), AnalysisIndexBool b a (a' :. as), TyEq b a a') => AnalysisIndex a (a' :. as) where
 	analysisIndex a as = analysisIndexBool (analysisAtHead a as) a as
-
+-}
