@@ -2,15 +2,15 @@
 -- "Spatio-Temporal Interaction Networks and Graphs (STING) Extensible Representation"
 -- Top-level module that exports all things STINGER related.
 
-module STINGER(
-	  module STINGER.Info
+module GraphHammer(
+	  module GraphHammer.Info
 	-- Selecting implementation to export.
-	, module STINGER.SimplestParallel
+	, module GraphHammer.SimplestParallel
 	--, module STINGER.Simplest
 	) where
 
 -- Information storage and retrieval.
-import STINGER.Info
+import GraphHammer.Info
 
 -- Prototype implementation.
-import STINGER.SimplestParallel
+import GraphHammer.SimplestParallel

@@ -9,7 +9,7 @@
 {-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction, PatternGuards, BangPatterns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module STINGER.SimplestParallel(
+module GraphHammer.SimplestParallel(
 	  Index	-- from G500.
 	-- HList
 	, Nil
@@ -71,10 +71,10 @@ import System.Mem (performGC)
 import System.Time
 
 import G500.Index
-import STINGER.HList
+import GraphHammer.HList
 
-import qualified STINGER.IntSet as ISet
-import qualified STINGER.IntMap as IMap
+import qualified GraphHammer.IntSet as ISet
+import qualified GraphHammer.IntMap as IMap
 
 import Debug.Trace
 

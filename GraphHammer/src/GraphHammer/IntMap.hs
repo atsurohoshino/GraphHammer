@@ -42,7 +42,7 @@
 -- (32 or 64).
 -----------------------------------------------------------------------------
 
-module STINGER.IntMap  ( 
+module GraphHammer.IntMap ( 
             -- * Map type
               IntMap, Key          -- instance Eq,Show
 
@@ -171,7 +171,7 @@ module STINGER.IntMap  (
 
 import Prelude hiding (lookup,map,filter,foldr,foldl,null)
 import Data.Bits 
-import qualified STINGER.IntSet as IntSet
+import qualified GraphHammer.IntSet as IntSet
 import Data.Monoid (Monoid(..))
 import Data.Maybe (fromMaybe)
 import Data.Foldable (Foldable(foldMap))

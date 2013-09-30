@@ -7,7 +7,7 @@
 
 {-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeSynonymInstances #-}
 
-module STINGER.Info(
+module GraphHammer.Info(
 	  Info(..)
 	, InfoArray(..)
 	) where

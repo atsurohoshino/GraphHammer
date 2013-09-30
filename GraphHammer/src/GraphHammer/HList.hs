@@ -7,7 +7,7 @@
 {-# LANGUAGE IncoherentInstances #-}
 
 
-module STINGER.HList where
+module GraphHammer.HList where
 
 data Nil
 

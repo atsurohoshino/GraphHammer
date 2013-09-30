@@ -37,7 +37,7 @@
 -- (32 or 64).
 -----------------------------------------------------------------------------
 
-module STINGER.IntSet  ( 
+module GraphHammer.IntSet ( 
             -- * Set type
             -- Exported with details for some faster operations in IntMap nearby (sergueyz).
               IntSet(..)          -- instance Eq,Show

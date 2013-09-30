@@ -5,12 +5,12 @@
 {-# LANGUAGE TypeFamilies, TypeOperators, FlexibleInstances, MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module STINGER.VertexDegree(
+module GraphHammer.VertexDegree(
 	  VertexDegree(..)
 	, vertexDegree
 	) where
 
-import STINGER
+import GraphHammer
 
 ------------------------------------------------------------------------------------
 -- Typical basic analysis.

@@ -6,15 +6,15 @@
 {-# LANGUAGE TypeFamilies, EmptyDataDecls, TypeOperators, FlexibleInstances, MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module STINGER.TriangleCount(
+module GraphHammer.TriangleCount(
 	  TriangleCount(..)
 	, triangleCount
 	) where
 
 
-import STINGER
+import GraphHammer
 
-import STINGER.VertexDegree
+import GraphHammer.VertexDegree
 
 -------------------------------------------------------------------------------
 -- Typical derived analysis.
