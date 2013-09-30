@@ -13,5 +13,4 @@ module STINGER(
 import STINGER.Info
 
 -- Prototype implementation.
-import STINGER.Simplest
 import STINGER.SimplestParallel

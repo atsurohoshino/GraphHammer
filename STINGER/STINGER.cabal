@@ -45,7 +45,7 @@ Cabal-version:       >=1.2
 
 Library
   -- Modules exported by the library.
-  Exposed-modules:     STINGER, STINGER.Info, STINGER.HList, STINGER.Simplest,
+  Exposed-modules:     STINGER, STINGER.Info, STINGER.HList,
                        STINGER.SimplestParallel,
                        STINGER.TriangleCount, STINGER.VertexDegree
   
