@@ -21,7 +21,7 @@ Library
                        GraphHammer.SimplestParallel,
                        GraphHammer.TriangleCount,
                        GraphHammer.VertexDegree
---                       GraphHammer.ClusteringCoefficient
+                       GraphHammer.ClusteringCoefficient
 
   -- Sources are in src/ subdirectory:
   hs-source-dirs:      src

@@ -4,7 +4,7 @@
 --
 -- Clustering coefficient computation.
 
-{-# LANGUAGE TypeFamilies, EmptyDataDecls, TypeOperators, FlexibleInstances, MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies, EmptyDataDecls, TypeOperators, FlexibleInstances, MultiParamTypeClasses, FlexibleContexts #-}
 
 module GraphHammer.ClusteringCoefficient(
 	  ClusteringCoefficient(..)
@@ -19,9 +19,13 @@ data ClusteringCoefficient = ClusteringCoefficient
 
 type instance RequiredAnalyses ClusteringCoefficient = TriangleCount :. VertexDegree :. Nil
 
+clusteringCoefficient :: (EnabledAnalysis ClusteringCoefficient wholeset
+                         , EnabledAnalysis TriangleCount wholeset
+                         , EnabledAnalysis VertexDegree wholeset)
 
-clusteringCoefficient :: Analysis (ClusteringCoefficient :. TriangleCount :. VertexDegree :. Nil)
-clusteringCoefficient = derivedAnalysis triangleCount $ \cc from to -> do
+
+                      => Analysis (ClusteringCoefficient :. TriangleCount :. VertexDegree :. Nil) wholeset
+clusteringCoefficient = derivedAnalysis triangleCount ClusteringCoefficient $ \cc from to -> do
 	let update index = do
 		tc <- getAnalysisResult TriangleCount index
 		deg <- getAnalysisResult VertexDegree index
