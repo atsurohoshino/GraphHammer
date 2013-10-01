@@ -21,7 +21,7 @@ module GraphHammer.SimplestParallel(
 	-- representation exported abstractly
 	, GraphHammer
 	-- How to create a new GraphHammer.
-	, stingerNew
+	, graphHammerNew
 
 	-- An analysis monad to create operations with GraphHammer.
 	, GraphHammerM
@@ -114,25 +114,25 @@ type EdgeSet = IntMap VertexSet
 
 -- |A representation parametrized by analyses required.
 data GraphHammer as = GraphHammer {
-	  stingerMaxNodes		:: !Int
-	, stingerNodeIndex		:: !Int
-	, stingerBatchCounter		:: !Int
-	, stingerEdges			:: !EdgeSet
+	  graphHammerMaxNodes		:: !Int
+	, graphHammerNodeIndex		:: !Int
+	, graphHammerBatchCounter	:: !Int
+	, graphHammerEdges			:: !EdgeSet
 	-- Results of analyses.
-	, stingerAnalyses		:: !AnalysesArrays
+	, graphHammerAnalyses		:: !AnalysesArrays
 	-- Nodes affected in current batch.
-	, stingerNodesAffected		:: !IntSet
+	, graphHammerNodesAffected	:: !IntSet
 	-- what analyses were changed in affected nodes.
-	, stingerAnalysesAffected	:: !(IntMap Int)
-	, stingerChannels		:: !(Array Int32 (Chan (Msg as)))
-	, stingerSendReceiveChannel	:: !(Chan SendReceive)
+	, graphHammerAnalysesAffected	:: !(IntMap Int)
+	, graphHammerChannels	    	:: !(Array Int32 (Chan (Msg as)))
+	, graphHammerSendReceiveChannel	:: !(Chan SendReceive)
 	-- added per portion.
-	, stingerPortionEdges		:: (Array Int EdgeSet)
+	, graphHammerPortionEdges		:: (Array Int EdgeSet)
 	-- increments for other nodes.
 	-- a map from node index to analysis increments.
-	, stingerOthersAnalyses		:: !OtherAnalyses
+	, graphHammerOthersAnalyses		:: !OtherAnalyses
 	-- a map from node index to continuations.
-	, stingerContinuationGroups	:: !(IntMap [IntSt as])
+	, graphHammerContinuationGroups	:: !(IntMap [IntSt as])
 	}
 
 -- |Monad to operate with GraphHammer.
@@ -184,11 +184,19 @@ vertexSetSize set = IMap.fold (+) 0 $ IMap.map ISet.size set
 -- Main GraphHammer API.
 
 -- |Create a GraphHammer structure for parallel GraphHammer processing.
--- Usage: stinger <- stingerNew maxJobNodes thisNodeIndex
-stingerNew :: HLength as => Int -> Int -> Chan SendReceive -> Array Int32 (Chan (Msg as)) -> IO (GraphHammer as)
-stingerNew maxNodes nodeIndex countingChan chans = do
+-- Usage: 
+-- @@
+-- gh <- graphHammerNew maxJobNodes thisNodeIndex
+-- @@
+graphHammerNew :: HLength as 
+               => Int -- ^ max job nodes
+               -> Int -- ^ Node index
+               -> Chan SendReceive 
+               -> Array Int32 (Chan (Msg as)) 
+               -> IO (GraphHammer as)
+graphHammerNew maxNodes nodeIndex countingChan chans = do
 	dummyAnalysisArrays <- liftM (array (0,0)) $ forM [0..0] $ \ai -> do
-		aArr <- stingerNewAnalysisSliceArray
+		aArr <- graphHammerNewAnalysisSliceArray
 		return (ai,array (0,0) [(0,aArr)])
 	let forwardResult = GraphHammer maxNodes nodeIndex 0 IMap.empty dummyAnalysisArrays
 			ISet.empty IMap.empty chans countingChan (error "no portion edges!") IMap.empty IMap.empty
@@ -197,36 +205,35 @@ stingerNew maxNodes nodeIndex countingChan chans = do
 	let analysisCount = hLength (analysisProjection forwardResult)
 	let analysisHighIndex = analysisCount-1
 	analysisArrays <- liftM (array (0,fromIntegral analysisHighIndex)) $ forM [0..fromIntegral analysisHighIndex] $ \ai -> do
-		aArr <- stingerNewAnalysisSliceArray
+		aArr <- graphHammerNewAnalysisSliceArray
 		return (ai,array (0,0) [(0,aArr)])
-	let result = forwardResult { stingerAnalyses = analysisArrays }
+	let result = forwardResult { graphHammerAnalyses = analysisArrays }
 	return result
 
-stingerCountReceived :: GraphHammerM as ()
-stingerCountReceived = do
-	countChan <- liftM stingerSendReceiveChannel get
+graphHammerCountReceived :: GraphHammerM as ()
+graphHammerCountReceived = do
+	countChan <- liftM graphHammerSendReceiveChannel get
 	liftIO $ writeChan countChan $ Received 1
 
-stingerCountSent :: Int -> GraphHammerM as ()
-stingerCountSent count = do
-	nodeIndex <- liftM stingerNodeIndex get
-	countChan <- liftM stingerSendReceiveChannel get
+graphHammerCountSent :: Int -> GraphHammerM as ()
+graphHammerCountSent count = do
+	nodeIndex <- liftM graphHammerNodeIndex get
+	countChan <- liftM graphHammerSendReceiveChannel get
 	liftIO $ writeChan countChan $ Sent nodeIndex count
 
+graphHammerNewAnalysisSliceArray :: IO (IOUArray Int32 Int64)
+graphHammerNewAnalysisSliceArray = newArray (0,fromIntegral analysisSliceSize-1) 0
 
-stingerNewAnalysisSliceArray :: IO (IOUArray Int32 Int64)
-stingerNewAnalysisSliceArray = newArray (0,fromIntegral analysisSliceSize-1) 0
-
-stingerFillPortionEdges :: [(Index,Index)] -> GraphHammerM as ()
-stingerFillPortionEdges edges = do
-	nodeIndex <- liftM (fromIntegral . stingerNodeIndex) get
-	maxNodes <- liftM (fromIntegral . stingerMaxNodes) get
+graphHammerFillPortionEdges :: [(Index,Index)] -> GraphHammerM as ()
+graphHammerFillPortionEdges edges = do
+	nodeIndex <- liftM (fromIntegral . graphHammerNodeIndex) get
+	maxNodes <- liftM (fromIntegral . graphHammerMaxNodes) get
 	let len = length edges
 	let sets = scanl (update maxNodes nodeIndex) IMap.empty edges
 	let arr = listArray (0,len) sets
 	modify $! \st -> last sets `seq` st {
-		  stingerPortionEdges = arr
-		, stingerOthersAnalyses = IMap.empty
+		  graphHammerPortionEdges = arr
+		, graphHammerOthersAnalyses = IMap.empty
 		}
 	where
 		update :: Int32 -> Int32 -> EdgeSet -> (Index,Index) -> EdgeSet
@@ -244,208 +251,174 @@ stingerFillPortionEdges edges = do
 				fromV = indexToVertex maxNodes fromI
 				toV = indexToVertex maxNodes toI
 
-stingerCommitNewPortion :: GraphHammerM as ()
-stingerCommitNewPortion = do
-	st <- get
-	let portionEdges = stingerPortionEdges st
-	let (_,highest) = bounds portionEdges
-	let latestUpdates = portionEdges ! highest
-{-
-	liftIO $ putStrLn $ "Latest updates "++show latestUpdates
----}
-	put $! st {
-		  stingerPortionEdges = error "stingerPortionEdges accessed outside of transaction."
-		, stingerEdges = IMap.unionWith vertexSetUnion latestUpdates $ stingerEdges st
-		, stingerContinuationGroups = IMap.empty
-		}
+graphHammerCommitNewPortion :: GraphHammerM as ()
+graphHammerCommitNewPortion = do
+    st <- get
+    let portionEdges = graphHammerPortionEdges st
+        (_,highest) = bounds portionEdges
+        latestUpdates = portionEdges ! highest
 
-stingerSplitIndex :: Index -> GraphHammerM as Vertex
-stingerSplitIndex index = do
-	maxNodes <- liftM stingerMaxNodes get
+    put $! st {
+              graphHammerPortionEdges = error "graphHammerPortionEdges accessed outside of transaction."
+            , graphHammerEdges = IMap.unionWith vertexSetUnion latestUpdates $ graphHammerEdges st
+            , graphHammerContinuationGroups = IMap.empty
+            }
+
+graphHammerSplitIndex :: Index -> GraphHammerM as Vertex
+graphHammerSplitIndex index = do
+	maxNodes <- liftM graphHammerMaxNodes get
 	return $ indexToVertex maxNodes index
 
-stingerVertexSetIntersection :: VertexSet -> VertexSet -> GraphHammerM as VertexSet
-stingerVertexSetIntersection s1 s2 = return $ vertexSetIntersection s1 s2
+graphHammerVertexSetIntersection :: VertexSet -> VertexSet -> GraphHammerM as VertexSet
+graphHammerVertexSetIntersection s1 s2 = return $ vertexSetIntersection s1 s2
 
-stingerVertexSetIntersectionAsIndices :: VertexSet -> VertexSet -> GraphHammerM as [Index]
-stingerVertexSetIntersectionAsIndices s1 s2 = do
-	maxNodes <- liftM stingerMaxNodes get
+graphHammerVertexSetIntersectionAsIndices :: VertexSet -> VertexSet -> GraphHammerM as [Index]
+graphHammerVertexSetIntersectionAsIndices s1 s2 = do
+	maxNodes <- liftM graphHammerMaxNodes get
 	let isection = vertexSetIntersection s1 s2
 	return $ map (vertexToIndex maxNodes) $ vertexSetToList isection
 
-stingerEdgeExists :: Int -> Vertex -> Vertex -> GraphHammerM as Bool
-stingerEdgeExists edgeIndex start end
+graphHammerEdgeExists :: Int -> Vertex -> Vertex -> GraphHammerM as Bool
+graphHammerEdgeExists edgeIndex start end
 	| start == end = return True
 	| otherwise = do
-	startIsLocal <- stingerLocalVertex start
+	startIsLocal <- graphHammerLocalVertex start
 	r <- if startIsLocal
 		then do
-			es <- stingerGetEdgeSet edgeIndex start
+			es <- graphHammerGetEdgeSet edgeIndex start
 			return $ vertexSetMember end es
 		else do
-			es <- stingerGetEdgeSet edgeIndex end
+			es <- graphHammerGetEdgeSet edgeIndex end
 			return $ vertexSetMember start es
-{-
-	thisNode <- liftM stingerNodeIndex get
-	let text = unlines [
-		  "Edge "++show (start,end) ++ "/"++show (end,start)++" "++(if r then "exists" else "doesn't exist")++" at node "++show thisNode++" for edge index "++show edgeIndex
-		, "We were looking at "++(if startIsLocal then "start index "++show start else ("end index "++show end))++" edge set."
-		]
-	liftIO $ putStrLn text
---	liftIO $ hFlush stdout
----}
 	return r
 
-stingerGetEdgeSet :: Int -> Vertex -> GraphHammerM as VertexSet
-stingerGetEdgeSet edgeInPortion vertex = do
+graphHammerGetEdgeSet :: Int -> Vertex -> GraphHammerM as VertexSet
+graphHammerGetEdgeSet edgeInPortion vertex = do
 	let localIndex = vertexIndex vertex
 	st <- get
-	let startEdges = IMap.findWithDefault IMap.empty localIndex $ stingerEdges st
-	let portionEdges = stingerPortionEdges st
+	let startEdges = IMap.findWithDefault IMap.empty localIndex $ graphHammerEdges st
+	let portionEdges = graphHammerPortionEdges st
 	let prevEdges = portionEdges ! edgeInPortion
 	let resultEdges = IMap.findWithDefault vertexSetEmpty localIndex prevEdges
 	return $ IMap.unionWith ISet.union startEdges resultEdges
 
---stingerGetEdges :: Int -> Index -> GraphHammerM as [Index]
---stingerGetEdges edgeIndex vertex = do
---	liftM Set.toList $ stingerGetEdgeSet edgeIndex vertex
-
-stingerGrowAnalysisArrays :: Int32 -> GraphHammerM as ()
-stingerGrowAnalysisArrays newMaxIndex = do
-	analyses <- liftM stingerAnalyses get
+graphHammerGrowAnalysisArrays :: Int32 -> GraphHammerM as ()
+graphHammerGrowAnalysisArrays newMaxIndex = do
+	analyses <- liftM graphHammerAnalyses get
 	let (lowA, highA) = bounds analyses
 	analyses' <- forM [lowA..highA] $ \ai -> do
 		let analysisArrays = analyses ! ai
 		let (lowAA,highAA) = bounds analysisArrays
 		let incr = newMaxIndex - highAA
 		addedArrays <- forM [0..incr-1] $ \ii -> do
-			slice <- liftIO stingerNewAnalysisSliceArray
+			slice <- liftIO graphHammerNewAnalysisSliceArray
 			return (highAA+1+ii, slice)
 		return (ai,array (lowAA, newMaxIndex) (assocs analysisArrays ++ addedArrays))
-	modify $! \st -> st { stingerAnalyses = array (lowA, highA) analyses' }
+	modify $! \st -> st { graphHammerAnalyses = array (lowA, highA) analyses' }
 
-stingerGetAnalysisArrayIndex :: Int32 -> Int32 -> GraphHammerM as (Int32,IOUArray Int32 Int64)
-stingerGetAnalysisArrayIndex analysisIndex localIndex = do
+graphHammerGetAnalysisArrayIndex :: Int32 -> Int32 -> GraphHammerM as (Int32,IOUArray Int32 Int64)
+graphHammerGetAnalysisArrayIndex analysisIndex localIndex = do
 	let indexOfSlice = shiftR localIndex analysisSliceSizeShift
-	analysisArrays <- liftM ((! analysisIndex) . stingerAnalyses) get
+	analysisArrays <- liftM ((! analysisIndex) . graphHammerAnalyses) get
 	let (_,highestIndex) = bounds analysisArrays
 	if highestIndex < indexOfSlice
 		then do
-			stingerGrowAnalysisArrays (fromIntegral indexOfSlice)
-			stingerGetAnalysisArrayIndex analysisIndex localIndex
+			graphHammerGrowAnalysisArrays (fromIntegral indexOfSlice)
+			graphHammerGetAnalysisArrayIndex analysisIndex localIndex
 		else do
 			let sliceArray = analysisArrays ! indexOfSlice
 			return (localIndex .&. fromIntegral analysisSliceSizeMask, sliceArray)
 
-stingerGetAnalysis :: Int -> Index -> GraphHammerM as Int64
-stingerGetAnalysis analysisIndex index = do
-	error "stingerGetAnalysis does not distinguish between local and not-local indices!!!"
-	localIndex <- stingerIndexToLocal index
-	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
+graphHammerGetAnalysis :: Int -> Index -> GraphHammerM as Int64
+graphHammerGetAnalysis analysisIndex index = do
+	error "graphHammerGetAnalysis does not distinguish between local and not-local indices!!!"
+	localIndex <- graphHammerIndexToLocal index
+	(sliceIndex,sliceArray) <- graphHammerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
 	liftIO $ readArray sliceArray sliceIndex
 
-stingerSetAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
-stingerSetAnalysis analysisIndex index value = do
-	error "stingerSetAnalysis does not distinguish between local and not-local indices!!!"
-	localIndex <- stingerIndexToLocal index
-	(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
+graphHammerSetAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
+graphHammerSetAnalysis analysisIndex index value = do
+	error "graphHammerSetAnalysis does not distinguish between local and not-local indices!!!"
+	localIndex <- graphHammerIndexToLocal index
+	(sliceIndex,sliceArray) <- graphHammerGetAnalysisArrayIndex (fromIntegral analysisIndex) localIndex
 	liftIO $ writeArray sliceArray sliceIndex value
 
-stingerIncrementAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
-stingerIncrementAnalysis analysisIndex index 0 = return ()	-- cheap no-op.
-stingerIncrementAnalysis analysisIndex index incr = do
-	local <- stingerIndexToLocal index
-	isLocal <- stingerLocalIndex index
+graphHammerIncrementAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
+graphHammerIncrementAnalysis analysisIndex index 0 = return ()	-- cheap no-op.
+graphHammerIncrementAnalysis analysisIndex index incr = do
+	local <- graphHammerIndexToLocal index
+	isLocal <- graphHammerLocalIndex index
 	if isLocal
 		then do
-{-
-			nodeIndex <- liftM stingerNodeIndex get
-			liftIO $ putStrLn $ "Incrementing analysis["++show analysisIndex++"]["++show index++"] locally at "++show nodeIndex++" by "++show incr
----}
-			(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) local
+			(sliceIndex,sliceArray) <- graphHammerGetAnalysisArrayIndex (fromIntegral analysisIndex) local
 			liftIO $ do
 				x <- readArray sliceArray sliceIndex
 				writeArray sliceArray sliceIndex (x + incr)
 			modify $! \st -> st {
-				  stingerNodesAffected = ISet.insert local $ stingerNodesAffected st
+				  graphHammerNodesAffected = ISet.insert local $ graphHammerNodesAffected st
 				}
 		else do
-			nodeIndex <- stingerIndexToNodeIndex index
+			nodeIndex <- graphHammerIndexToNodeIndex index
 			let joinAnalyses old new = IMap.unionWith (IMap.unionWith (+)) old new
 			modify $! \st -> st {
-				  stingerOthersAnalyses = IMap.insertWith joinAnalyses nodeIndex
+				  graphHammerOthersAnalyses = IMap.insertWith joinAnalyses nodeIndex
 					(IMap.singleton local (IMap.singleton (fromIntegral analysisIndex) incr)) $
-					stingerOthersAnalyses st
+					graphHammerOthersAnalyses st
 				}
-{-
-			postponed <- liftM stingerOthersAnalyses get
-			maxNodes <- liftM stingerMaxNodes get
-			let mainMsg = "Postpone increment by "++show incr++" of analysis["++show analysisIndex++"]["++show index++"] to node "++show nodeIndex
-			let prettyIncr node localI (ai,incr) =
-				"        analysis["++show ai++"]["++show (localI*maxNodes+node)++"] += "++show incr
-			let prettyIncrs node (localI,incrs) = map (prettyIncr node localI) $ IMap.toList incrs
-			let prettyNodeIncrs node nodeIncrs = ("    node "++show node) :
-				concatMap (prettyIncrs node) (IMap.toList nodeIncrs)
-			let postponedList = unlines $ concatMap (\(n,incrs) -> prettyNodeIncrs n incrs) $ IMap.toList postponed
-			liftIO $ putStrLn $ mainMsg ++"\n"++ postponedList
----}
 
-stingerBulkIncrementAnalysis :: Int -> VertexSet -> Int64 -> GraphHammerM as ()
-stingerBulkIncrementAnalysis analysisIndex vertices 0 = return ()
-stingerBulkIncrementAnalysis analysisIndex vertices incr = do
-	thisNode <- liftM (fromIntegral . stingerNodeIndex) get
+graphHammerBulkIncrementAnalysis :: Int -> VertexSet -> Int64 -> GraphHammerM as ()
+graphHammerBulkIncrementAnalysis analysisIndex vertices 0 = return ()
+graphHammerBulkIncrementAnalysis analysisIndex vertices incr = do
+	thisNode <- liftM (fromIntegral . graphHammerNodeIndex) get
 	let (left,ours,right) = IMap.splitLookup thisNode vertices
 	case ours of
 		-- perform increments for local analyses.
 		Just vertices -> do
 			forM_ (ISet.toList vertices) $ \localIndex -> do
-				(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) (fromIntegral localIndex)
+				(sliceIndex,sliceArray) <- graphHammerGetAnalysisArrayIndex (fromIntegral analysisIndex) (fromIntegral localIndex)
 				liftIO $ do
 					x <- readArray sliceArray sliceIndex
 					writeArray sliceArray sliceIndex (x + incr)
 			modify $! \st -> st {
-				  stingerNodesAffected = ISet.union vertices $ stingerNodesAffected st
+				  graphHammerNodesAffected = ISet.union vertices $ graphHammerNodesAffected st
 				}
 		Nothing -> return ()
-	-- join all other analyses.
---	liftIO $ putStrLn $ "ours: "++show ours
---	liftIO $ putStrLn $ "left, right: "++show (left, right)
 	let joinAnalyses :: VertexSet -> OtherAnalyses -> OtherAnalyses
             joinAnalyses new old = IMap.unionWith
 			(IMap.unionWith (IMap.unionWith (+)))
 			(IMap.map (flip IMap.mapFromSetValue $ IMap.singleton (fromIntegral analysisIndex) incr) new)
 			old
 	modify $! \st -> st {
-		  stingerOthersAnalyses = joinAnalyses left $ joinAnalyses right $
-			stingerOthersAnalyses st
+		  graphHammerOthersAnalyses = joinAnalyses left $ joinAnalyses right $
+			graphHammerOthersAnalyses st
 		}
 	return ()
 
-stingerGetOtherAnalyses :: GraphHammerM as [(Int32,AnalysesMap)]
-stingerGetOtherAnalyses = do
-	liftM (IMap.toList . stingerOthersAnalyses) get
+graphHammerGetOtherAnalyses :: GraphHammerM as [(Int32,AnalysesMap)]
+graphHammerGetOtherAnalyses = do
+	liftM (IMap.toList . graphHammerOthersAnalyses) get
 
-stingerIndexToLocal :: Index -> GraphHammerM as Int32
-stingerIndexToLocal index = do
-	maxNodes <- liftM stingerMaxNodes get
+graphHammerIndexToLocal :: Index -> GraphHammerM as Int32
+graphHammerIndexToLocal index = do
+	maxNodes <- liftM graphHammerMaxNodes get
 	return $ fromIntegral $ index `div` fromIntegral maxNodes
 
-stingerIndexToNodeIndex :: Index -> GraphHammerM as Int32
-stingerIndexToNodeIndex index = do
-	maxNodes <- liftM stingerMaxNodes get
+graphHammerIndexToNodeIndex :: Index -> GraphHammerM as Int32
+graphHammerIndexToNodeIndex index = do
+	maxNodes <- liftM graphHammerMaxNodes get
 	return $ fromIntegral $ index `mod` fromIntegral maxNodes
 
-stingerCurrentNodeIndex :: GraphHammerM as Int32
-stingerCurrentNodeIndex = liftM (fromIntegral . stingerNodeIndex) get
+graphHammerCurrentNodeIndex :: GraphHammerM as Int32
+graphHammerCurrentNodeIndex = liftM (fromIntegral . graphHammerNodeIndex) get
 
-stingerLocalIndex :: Index -> GraphHammerM as Bool
-stingerLocalIndex index = do
-	nodeIndex <- stingerIndexToNodeIndex index
-	liftM (nodeIndex ==) stingerCurrentNodeIndex
+graphHammerLocalIndex :: Index -> GraphHammerM as Bool
+graphHammerLocalIndex index = do
+	nodeIndex <- graphHammerIndexToNodeIndex index
+	liftM (nodeIndex ==) graphHammerCurrentNodeIndex
 
-stingerLocalVertex :: Vertex -> GraphHammerM as Bool
-stingerLocalVertex vertex = do
-	liftM ((vertexNode vertex ==) . fromIntegral) stingerCurrentNodeIndex
+graphHammerLocalVertex :: Vertex -> GraphHammerM as Bool
+graphHammerLocalVertex vertex = do
+	liftM ((vertexNode vertex ==) . fromIntegral) graphHammerCurrentNodeIndex
 
 -- |Compute "local job" flag from two vertices.
 -- Properties:
@@ -455,24 +428,24 @@ stingerLocalVertex vertex = do
 --   2. local job for (v1,v2) == local job for (v2,v1)
 -- It is possible for those properties to do not hold for completely
 -- local or completely external pair.
-stingerLocalJob :: Vertex -> Vertex -> GraphHammerM as Bool
-stingerLocalJob v1' v2' = do
+graphHammerLocalJob :: Vertex -> Vertex -> GraphHammerM as Bool
+graphHammerLocalJob v1' v2' = do
 	let n1 = vertexNode v1
 	let n2 = vertexNode v2
 	let randomDir = ((vertexIndex v1 `xor` vertexIndex v2) .&. 1) == 0
-	v1Local <- stingerLocalVertex v1
+	v1Local <- graphHammerLocalVertex v1
 	return $ (randomDir && not v1Local) || (not randomDir && v1Local)
 	where
 		-- order indices to support property 2.
 		v1 = min v1' v2'
 		v2 = max v1' v2'
 
-stingerMergeIncrements :: AnalysesMap -> GraphHammerM as ()
-stingerMergeIncrements increments = do
+graphHammerMergeIncrements :: AnalysesMap -> GraphHammerM as ()
+graphHammerMergeIncrements increments = do
 {-
 	st <- get
-	let maxNodes = stingerMaxNodes st
-	let node = stingerNodeIndex st
+	let maxNodes = graphHammerMaxNodes st
+	let node = graphHammerNodeIndex st
 	let header = "Merging increments at node "++show node++":"
 	let prettyAIncr index (ai,incr) = concat ["    analysis [",show ai,"][",show index,"] += ",show incr]
 	let prettyIndexIncrs (localI,incrs) = map (prettyAIncr (localI*maxNodes+node)) $ IMap.toList incrs
@@ -482,57 +455,57 @@ stingerMergeIncrements increments = do
 ---}
 	let flatIncrs = concatMap (\(i,as) -> map (\(ai,incr) -> (i,ai,incr)) $ IMap.toList as) $ IMap.toList increments
 	forM_ flatIncrs $ \(localIndex,analysisIndex,incr) -> do
-		(sliceIndex,sliceArray) <- stingerGetAnalysisArrayIndex (fromIntegral analysisIndex) (fromIntegral localIndex)
+		(sliceIndex,sliceArray) <- graphHammerGetAnalysisArrayIndex (fromIntegral analysisIndex) (fromIntegral localIndex)
 		liftIO $ do
 			x <- readArray sliceArray sliceIndex
 			writeArray sliceArray sliceIndex (x+incr)
 	let mergeIncs old new = IMap.unionWith (+) old new
 	modify $! \st -> st {
-		  stingerNodesAffected = ISet.union (IMap.keysSet increments) $ stingerNodesAffected st
+		  graphHammerNodesAffected = ISet.union (IMap.keysSet increments) $ graphHammerNodesAffected st
 		}
 
-stingerSendToNode :: Int32 -> Msg as -> GraphHammerM as ()
-stingerSendToNode nodeIndex msg = do
-	nodeChan <- liftM ((!nodeIndex) . stingerChannels) get
+graphHammerSendToNode :: Int32 -> Msg as -> GraphHammerM as ()
+graphHammerSendToNode nodeIndex msg = do
+	nodeChan <- liftM ((!nodeIndex) . graphHammerChannels) get
 	liftIO $ writeChan nodeChan msg
 
-stingerSendToNodeOfVertex :: Vertex -> Msg as -> GraphHammerM as ()
-stingerSendToNodeOfVertex vertex msg = do
-	stingerSendToNode (vertexNode vertex) msg 
+graphHammerSendToNodeOfVertex :: Vertex -> Msg as -> GraphHammerM as ()
+graphHammerSendToNodeOfVertex vertex msg = do
+	graphHammerSendToNode (vertexNode vertex) msg 
 
-stingerGroupContinuations :: Vertex -> IntSt as -> GraphHammerM as ()
-stingerGroupContinuations vertex contState = do
+graphHammerGroupContinuations :: Vertex -> IntSt as -> GraphHammerM as ()
+graphHammerGroupContinuations vertex contState = do
 	let upd v = Just $ case v of
 		Just xs -> contState : xs
 		Nothing -> [contState]
 	modify $! \st -> st {
-		  stingerContinuationGroups = IMap.alter
+		  graphHammerContinuationGroups = IMap.alter
 			(\v -> fmap (contState:) v `mplus` return [contState])
-			(vertexNode vertex) $ stingerContinuationGroups st
+			(vertexNode vertex) $ graphHammerContinuationGroups st
 		}
 
-stingerDistributeContinuations :: GraphHammerM as ()
-stingerDistributeContinuations = do
-	nodesGroups <- liftM (IMap.toList . stingerContinuationGroups) get
-	forM_ nodesGroups $ \(n,g) -> stingerSendToNode n (ContinueIntersection g)
+graphHammerDistributeContinuations :: GraphHammerM as ()
+graphHammerDistributeContinuations = do
+	nodesGroups <- liftM (IMap.toList . graphHammerContinuationGroups) get
+	forM_ nodesGroups $ \(n,g) -> graphHammerSendToNode n (ContinueIntersection g)
 
 -- |Get analyses for no more than 100 affected vertices.
-stingerGetAffectedAnalyses :: GraphHammerM as [(Index,VertexAnalyses)]
-stingerGetAffectedAnalyses = do
+graphHammerGetAffectedAnalyses :: GraphHammerM as [(Index,VertexAnalyses)]
+graphHammerGetAffectedAnalyses = do
 	st <- get
-	let affected = take 100 $ ISet.toList $ stingerNodesAffected st
-	let nodeIndex = fromIntegral $ stingerNodeIndex st
-	let maxNodes = fromIntegral $ stingerMaxNodes st
+	let affected = take 100 $ ISet.toList $ graphHammerNodesAffected st
+	let nodeIndex = fromIntegral $ graphHammerNodeIndex st
+	let maxNodes = fromIntegral $ graphHammerMaxNodes st
 	let toGlobal i = fromIntegral i * maxNodes + nodeIndex
 	forM affected $ \localIndex -> do
-		analyses <- liftM IMap.unions $ forM (assocs (stingerAnalyses st)) $ \(ai,analysisSlices) -> do
-			(sliceIndex, slice) <- stingerGetAnalysisArrayIndex ai (fromIntegral localIndex)
+		analyses <- liftM IMap.unions $ forM (assocs (graphHammerAnalyses st)) $ \(ai,analysisSlices) -> do
+			(sliceIndex, slice) <- graphHammerGetAnalysisArrayIndex ai (fromIntegral localIndex)
 			x <- liftIO $ readArray slice sliceIndex
 			return (IMap.singleton (fromIntegral ai) x)
 		return (toGlobal localIndex, analyses)
 
-stingerClearAffected :: GraphHammerM as ()
-stingerClearAffected = modify $! \st -> st { stingerNodesAffected = ISet.empty }
+graphHammerClearAffected :: GraphHammerM as ()
+graphHammerClearAffected = modify $! \st -> st { graphHammerNodesAffected = ISet.empty }
 
 -------------------------------------------------------------------------------
 -- Code that runs the analytics.
@@ -675,7 +648,7 @@ workerThread :: (HLength as, EnabledAnalyses as as) => Analysis as as ->
 	Int -> Int -> Chan SendReceive -> MsgChanArr as -> IO ()
 workerThread analysis maxNodes nodeIndex countingChan chans = do
 	let ourChan = chans ! fromIntegral nodeIndex
-	stinger <- stingerNew maxNodes nodeIndex countingChan chans
+	graphHammer <- graphHammerNew maxNodes nodeIndex countingChan chans
 	let --receiveLoop :: EnabledAnalysis as as => Int -> GraphHammerM (Msg as) as ()
 	    receiveLoop n
 		| n <= 0 = return ()
@@ -683,8 +656,8 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 		msg <- liftIO $ readChan ourChan
 		case msg of
 			AtomicIncrement pn changes -> do
-				stingerMergeIncrements changes
-				stingerCountReceived
+				graphHammerMergeIncrements changes
+				graphHammerCountReceived
 				receiveLoop n
 			ContinueIntersection envs -> do
 				forM_ envs interpret
@@ -704,38 +677,38 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 			Portion pn edges answer -> do
 --				liftIO $ putStrLn $ "Portion "++show pn++" @"++show nodeIndex
 				let es = pairs $ UA.elems edges
-				stingerFillPortionEdges es
-				stingerClearAffected
+				graphHammerFillPortionEdges es
+				graphHammerClearAffected
 				let work n (i,(f,t)) = do
 					incr <- workOnEdge analysis i f t
 					return $! n + incr
 				count <- foldM work 0 $ zip [0..] es
 --				liftIO $ putStrLn $ "Need to receive "++show count++" msgs @"++show nodeIndex
-				stingerDistributeContinuations
+				graphHammerDistributeContinuations
 				receiveLoop count
 --				liftIO $ putStrLn $ "Sending others' increments."
 				sendOtherIncrements pn
 --				liftIO $ putStrLn $ "Committing portion."
-				stingerCommitNewPortion
+				graphHammerCommitNewPortion
 				liftIO $ writeChan answer ()
 --				liftIO $ putStrLn $ "Sending answer."
 				mainLoop
 			AtomicIncrement pn changes -> do
-				stingerMergeIncrements changes
-				stingerCountReceived
+				graphHammerMergeIncrements changes
+				graphHammerCountReceived
 				mainLoop
 			Stop answer -> do
 				liftIO $ putStrLn $ "stopped "++show nodeIndex
 				liftIO $ writeChan answer nodeIndex
 				return ()
 			GetAffected answer -> do
-				affectedAnalysis <- stingerGetAffectedAnalyses
+				affectedAnalysis <- graphHammerGetAffectedAnalyses
 				liftIO $ writeChan answer affectedAnalysis
 				mainLoop
 			msg -> do
 				liftIO $ writeChan ourChan msg
 				mainLoop
-	flip runStateT stinger $ mainLoop
+	flip runStateT graphHammer $ mainLoop
 	return ()
 	where
 		pairs (a:b:abs) = (a,b) : pairs abs
@@ -743,22 +716,22 @@ workerThread analysis maxNodes nodeIndex countingChan chans = do
 
 sendOtherIncrements :: Int -> GraphHammerM as ()
 sendOtherIncrements pn = do
-	increments <- stingerGetOtherAnalyses
+	increments <- graphHammerGetOtherAnalyses
 --	liftIO $ putStrLn $ "Others increments: "++show increments
 	forM_ increments $ \(node,incrs) -> 
-		stingerSendToNode (fromIntegral node) (AtomicIncrement pn incrs)
-	stingerCountSent $ length increments
+		graphHammerSendToNode (fromIntegral node) (AtomicIncrement pn incrs)
+	graphHammerCountSent $ length increments
 
 workOnEdge :: Analysis as as -> Int -> Index -> Index -> GraphHammerM as Int
 workOnEdge analysis edgeIndex fromIndex toIndex = do
-	fromVertex <- stingerSplitIndex fromIndex
-	toVertex <- stingerSplitIndex toIndex
-	exists <- stingerEdgeExists edgeIndex fromVertex toVertex
-	isFromLocal <- stingerLocalVertex fromVertex
-	isToLocal <- stingerLocalVertex toVertex
-	localStart <- stingerLocalJob fromVertex toVertex
+	fromVertex <- graphHammerSplitIndex fromIndex
+	toVertex <- graphHammerSplitIndex toIndex
+	exists <- graphHammerEdgeExists edgeIndex fromVertex toVertex
+	isFromLocal <- graphHammerLocalVertex fromVertex
+	isToLocal <- graphHammerLocalVertex toVertex
+	localStart <- graphHammerLocalJob fromVertex toVertex
 {-
-	thisNode <- stingerCurrentNodeIndex
+	thisNode <- graphHammerCurrentNodeIndex
 	liftIO $ do
 		putStrLn $ unlines [
 			  "thisNode "++show thisNode
@@ -1081,20 +1054,20 @@ interpretStatement stat = case stat of
 		incr <- interpretValue incr
 		vIndex <- interpretValue vIndex
 {-
-		thisNode <- lift stingerCurrentNodeIndex
+		thisNode <- lift graphHammerCurrentNodeIndex
 		liftIO $ putStrLn $ "thisNode "++show thisNode++", incrementing analysis["++show aIndex++"]["++show vIndex++"] by "++show incr
 ---}
-		lift $ stingerIncrementAnalysis aIndex vIndex incr
+		lift $ graphHammerIncrementAnalysis aIndex vIndex incr
 	ASIf cond thenStats elseStats -> do
 		c <- interpretValue cond
 		let stats = if c then thenStats else elseStats
 		modify $! \st -> st { isConts = stats : isConts st }
 	ASContinueEdgeIsect edgeSet a b thisNodeVertex onEdgeStats -> do
 		ei <- liftM isEdgeIndex get
-		thisEdgeSet <- lift $ stingerGetEdgeSet ei thisNodeVertex
-		isection <- lift $ stingerVertexSetIntersectionAsIndices edgeSet thisEdgeSet
+		thisEdgeSet <- lift $ graphHammerGetEdgeSet ei thisNodeVertex
+		isection <- lift $ graphHammerVertexSetIntersectionAsIndices edgeSet thisEdgeSet
 {-
-		thisNode <- lift stingerCurrentNodeIndex
+		thisNode <- lift graphHammerCurrentNodeIndex
 		liftIO $ putStrLn $ "thisNode "++show thisNode++", ei "++show ei++", edgeSet "++show edgeSet++", thisEdgeSet "++show thisEdgeSet++", isection "++show isection
 ---}
 		let cont c = ASAssign a (cst c) : ASAssign b (cst c) :
@@ -1102,8 +1075,8 @@ interpretStatement stat = case stat of
 		modify $! \st -> st { isConts = map cont isection ++ isConts st }
 	ASContinueEdgeIsectBulk edgeSet thisNodeVertex bulkOps -> do
 		ei <- liftM isEdgeIndex get
-		thisEdgeSet <- lift $ stingerGetEdgeSet ei thisNodeVertex
-		isection <- lift $ stingerVertexSetIntersection edgeSet thisEdgeSet
+		thisEdgeSet <- lift $ graphHammerGetEdgeSet ei thisNodeVertex
+		isection <- lift $ graphHammerVertexSetIntersection edgeSet thisEdgeSet
 		interpretBulkOps isection bulkOps
 	ASOnEdgesIntersection av bv aN bN stats -> do
 		interpretEdgesIntersection av bv aN bN stats
@@ -1121,34 +1094,34 @@ interpretIntersectionBulkOps a b ops = do
 	ei <- liftM isEdgeIndex get
 	s1 <- interpretVertexValue a
 	s2 <- interpretVertexValue b
-	l1 <- lift $ stingerLocalVertex s1
-	l2 <- lift $ stingerLocalVertex s2
+	l1 <- lift $ graphHammerLocalVertex s1
+	l2 <- lift $ graphHammerLocalVertex s2
 	case (l1,l2) of
 		-- this is filtered out in previous steps.
 		(False, False) -> error "completely non-local computation!"
 		-- completely local computation.
 		(True, True) -> do
-			e1 <- lift $ stingerGetEdgeSet ei s1
-			e2 <- lift $ stingerGetEdgeSet ei s2
-			isection <- lift $ stingerVertexSetIntersection e1 e2
+			e1 <- lift $ graphHammerGetEdgeSet ei s1
+			e2 <- lift $ graphHammerGetEdgeSet ei s2
+			isection <- lift $ graphHammerVertexSetIntersection e1 e2
 			interpretBulkOps isection ops
 		-- partially local computations that started in our node.
 		(True, False) -> do
-			ourEdges <- lift $ stingerGetEdgeSet ei s1
+			ourEdges <- lift $ graphHammerGetEdgeSet ei s1
 			sendAndStop s2 ourEdges
 		(False, True) -> do
-			ourEdges <- lift $ stingerGetEdgeSet ei s2
+			ourEdges <- lift $ graphHammerGetEdgeSet ei s2
 			sendAndStop s1 ourEdges
 	where
 		sendAndStop destIndex ourEdges = do
 			st <- get
 			let continueStat = ASContinueEdgeIsectBulk ourEdges destIndex ops
 			let sendSt = continueStat `seq` st { isConts = [continueStat] : isConts st }
-			lift $ stingerGroupContinuations destIndex $! sendSt
+			lift $ graphHammerGroupContinuations destIndex $! sendSt
 			-- stop interpreting here. It will be continued on another node.
 			modify $! \st -> st { isConts = [] }
 {-
-			thisNode <- lift stingerCurrentNodeIndex
+			thisNode <- lift graphHammerCurrentNodeIndex
 			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
 ---}
 		
@@ -1159,7 +1132,7 @@ interpretBulkOps isection (op:ops) = do
 	case op of
 		BulkIncr aindex _ _ incr -> do
 			v <- interpretValue incr
-			lift $ stingerBulkIncrementAnalysis aindex isection v
+			lift $ graphHammerBulkIncrementAnalysis aindex isection v
 		CountIncr v incr -> do
 			assignValue v (incr *. cst (fromIntegral $ vertexSetSize isection))
 	interpretBulkOps isection ops
@@ -1169,40 +1142,40 @@ interpretEdgesIntersection a b aN bN stats = do
 	ei <- liftM isEdgeIndex get
 	s1 <- interpretVertexValue a
 	s2 <- interpretVertexValue b
-	l1 <- lift $ stingerLocalVertex s1
-	l2 <- lift $ stingerLocalVertex s2
+	l1 <- lift $ graphHammerLocalVertex s1
+	l2 <- lift $ graphHammerLocalVertex s2
 	case (l1,l2) of
 		(False, False) -> error "completely non-local computation!"
 		(True,True) -> do
-			e1 <- lift $ stingerGetEdgeSet ei s1
-			e2 <- lift $ stingerGetEdgeSet ei s2
+			e1 <- lift $ graphHammerGetEdgeSet ei s1
+			e2 <- lift $ graphHammerGetEdgeSet ei s2
 			let cont c = ASAssign aN (cst c) :
 				ASAssign bN (cst c) :
 				stats
-			isection <- lift $ stingerVertexSetIntersectionAsIndices e1 e2
+			isection <- lift $ graphHammerVertexSetIntersectionAsIndices e1 e2
 {-
-			thisNode <- lift stingerCurrentNodeIndex
+			thisNode <- lift graphHammerCurrentNodeIndex
 			liftIO $ putStrLn $ "edge "++show (s1,s2)++", isection "++show isection++", e1 "++show e1++", e2 "++show e2
 ---}
 			let conts = map cont isection
 			modify $! \st -> st { isConts = conts ++ isConts st }
 		-- one is local to us, another is out of our reach.
 		(True,False) -> do
-			ourEdges <- lift $ stingerGetEdgeSet ei s1
+			ourEdges <- lift $ graphHammerGetEdgeSet ei s1
 			sendAndStop s2 s1 ourEdges
 		(False,True) -> do
-			ourEdges <- lift $ stingerGetEdgeSet ei s2
+			ourEdges <- lift $ graphHammerGetEdgeSet ei s2
 			sendAndStop s1 s2 ourEdges
 	where
 		sendAndStop destIndex ourIndex ourEdges = do
 			st <- get
 			let continueStat = ASContinueEdgeIsect ourEdges aN bN destIndex stats
 			let sendSt = st { isConts = [continueStat] : isConts st }
-			lift $ stingerGroupContinuations destIndex sendSt
+			lift $ graphHammerGroupContinuations destIndex sendSt
 			-- stop interpreting here. It will be continued on another node.
 			modify $! \st -> st { isConts = [] }
 {-
-			thisNode <- lift stingerCurrentNodeIndex
+			thisNode <- lift graphHammerCurrentNodeIndex
 			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
 ---}
 
@@ -1221,7 +1194,7 @@ interpretOnEdges startVertex vertexToAssign stats = do
 	error "standalone onEdges is not supported right now!"
 {-
 	start <- interpretValue startVertex
-	edges <- lift $ stingerGetEdges start
+	edges <- lift $ graphHammerGetEdges start
 	forM_ edges $ \edge -> do
 		assignValue vertexToAssign $ cst edge
 		interpretStatements stats
@@ -1252,7 +1225,7 @@ interpretValue value = case value of
 	ValueComposed v -> interpretValue v
 	ValueAnalysisResult analysisIndex vertex -> do
 		v <- interpretValue vertex
-		lift $ stingerGetAnalysis analysisIndex v
+		lift $ graphHammerGetAnalysis analysisIndex v
 	where
 		interpretBin :: (a -> b -> r) -> Value _a a -> Value _b b -> AIM as r
 		interpretBin f a b = liftM2 f (interpretValue a) (interpretValue b)
@@ -1260,7 +1233,7 @@ interpretValue value = case value of
 interpretVertexValue :: Value _a Index -> AIM as Vertex
 interpretVertexValue value = do
 	i <- interpretValue value
-	lift $ stingerSplitIndex i
+	lift $ graphHammerSplitIndex i
 
 -------------------------------------------------------------------------------
 -- Optimizing statements operations.
