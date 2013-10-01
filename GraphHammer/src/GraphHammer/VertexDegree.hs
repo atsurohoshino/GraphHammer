@@ -1,13 +1,13 @@
--- |GraphHammer.VertexDegree
+{-# LANGUAGE TypeFamilies, TypeOperators, FlexibleInstances, MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
+
+-- |
+-- Module    : GraphHammer.VertexDegree
 -- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
 -- License   : GPLv2
 --
 --
 -- Vertex degree analysis.
-
-{-# LANGUAGE TypeFamilies, TypeOperators, FlexibleInstances, MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleContexts #-}
-
 module GraphHammer.VertexDegree(
 	  VertexDegree(..)
 	, vertexDegree

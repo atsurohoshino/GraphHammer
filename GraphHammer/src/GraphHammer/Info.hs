@@ -1,4 +1,6 @@
--- |GraphHammer.Info
+{-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeSynonymInstances #-}
+-- |
+-- Module    : GraphHammer.Info
 -- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
 -- License   : GPLv2
 --
@@ -6,9 +8,6 @@
 --
 -- Also defines instances of those classes for unit (). It is meant as a safe way
 -- to say "no useful information". Its use as an info should not incur any cost.
-
-{-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeSynonymInstances #-}
-
 module GraphHammer.Info(
 	  Info(..)
 	, InfoArray(..)

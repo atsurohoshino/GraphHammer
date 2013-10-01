@@ -1,4 +1,5 @@
--- | GraphHammer.hs
+-- | 
+-- Module    : GraphHammer.hs
 -- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
 -- License   : GPLv2
 --

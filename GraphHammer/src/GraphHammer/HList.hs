@@ -1,14 +1,12 @@
--- |GraphHammer.HList
+{-# LANGUAGE TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
+{-# LANGUAGE IncoherentInstances #-}
+-- |
+-- Module    : GraphHammer.HList
 -- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
 -- License   : GPLv2
 --
 -- Home-brewn HList.
-
-{-# LANGUAGE TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
-{-# LANGUAGE IncoherentInstances #-}
-
-
 module GraphHammer.HList where
 
 data Nil

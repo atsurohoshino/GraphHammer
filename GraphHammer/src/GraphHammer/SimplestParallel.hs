@@ -1,4 +1,9 @@
--- |GraphHammer.SimplestParallel
+{-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
+{-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction, PatternGuards, BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+-- |
+-- Module    : GraphHammer.SimplestParallel
 -- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
 -- License   : GPLv2
 --
@@ -6,28 +11,22 @@
 -- Simplest and slowest implementation for GraphHammer data structure and analyses combination.
 -- Is used for API prototyping.
 -- This version is extended with parallel execution of analyses.
-
-{-# LANGUAGE GADTs, TypeFamilies, MultiParamTypeClasses, TypeOperators, FunctionalDependencies #-}
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, UndecidableInstances, EmptyDataDecls #-}
-{-# LANGUAGE IncoherentInstances, NoMonomorphismRestriction, PatternGuards, BangPatterns #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 module GraphHammer.SimplestParallel(
 	  Index	-- from G500.
-	-- HList
+	-- * HList
 	, Nil
 	, (:.)
 
-	-- representation exported abstractly
+	-- * Representation exported abstractly
 	, GraphHammer
-	-- How to create a new GraphHammer.
+	-- ** How to create a new GraphHammer.
 	, graphHammerNew
 
-	-- An analysis monad to create operations with GraphHammer.
+	-- ** An analysis monad to create operations with GraphHammer.
 	, GraphHammerM
 	, runAnalysesStack
 
-	-- local values processing.
+	-- ** Local values processing.
 	, Value
 	, Composed
 	, localValue
@@ -36,7 +35,7 @@ module GraphHammer.SimplestParallel(
 	, (+.), (-.), (*.), divV
 	, (===), (=/=)
 
-	-- Analysis type. Abstract.
+	-- * Analysis type. Abstract.
 	, Analysis
 	, AnM
 	, onEdges
@@ -45,9 +44,9 @@ module GraphHammer.SimplestParallel(
 	, putAnalysisResult
 	, incrementAnalysisResult
 	, RequiredAnalyses
-	-- how to create basic analysis, one which does not depend on the other.
+	-- ** How to create basic analysis, one which does not depend on the other.
 	, basicAnalysis
-	-- derived analysis, dependent on some other.
+	-- ** Derived analysis, dependent on some other.
 	, derivedAnalysis
 	, EnabledAnalysis, EnabledAnalyses
 	) where
@@ -1324,7 +1323,7 @@ derivedAnalysis (Analysis startV endV startI requiredActions) analysis edgeInser
         -- new ones
         ASOnEdgesIntersection va vb ai bi stats -> ASOnEdgesIntersection va vb ai bi $ map liftStatement stats
 --        ASIntersectionBulkOps va vb ops -> ASIntersectionBulkOps va vb ops
-        ASContinueEdgeIsect vs ai bi v stat -> ASContinueEdgeIsect vs ai bi b $ map liftStatements stats
+        ASContinueEdgeIsect vs ai bi v stat -> ASContinueEdgeIsect vs ai bi v $ map liftStatement stat
 --        ASContinueEdgeIsectBulk _ _ _
     currentActions = optimizeStatements $ asStatements env
     i = asValueIndex env

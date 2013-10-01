@@ -1,11 +1,12 @@
--- | GraphHammer.ClusteringCoefficient
+{-# LANGUAGE TypeFamilies, EmptyDataDecls, TypeOperators, FlexibleInstances, MultiParamTypeClasses, FlexibleContexts #-}
+-- | 
+-- Module    : GraphHammer.ClusteringCoefficient
 -- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
 -- License   : GPLv2
+-- Stability : unstable
 --
--- Clustering coefficient computation.
-
-{-# LANGUAGE TypeFamilies, EmptyDataDecls, TypeOperators, FlexibleInstances, MultiParamTypeClasses, FlexibleContexts #-}
-
+-- Clustering coefficient computation, this module is still in experimental
+-- state, and requires updates for full featured use.
 module GraphHammer.ClusteringCoefficient(
 	  ClusteringCoefficient(..)
 	, clusteringCoefficient
@@ -15,15 +16,15 @@ import GraphHammer
 import GraphHammer.TriangleCount
 import GraphHammer.VertexDegree
 
+-- | ClusteringCoefficient analysis tag
 data ClusteringCoefficient = ClusteringCoefficient
 
 type instance RequiredAnalyses ClusteringCoefficient = TriangleCount :. VertexDegree :. Nil
 
+-- | ClusteringCoefficient analysis
 clusteringCoefficient :: (EnabledAnalysis ClusteringCoefficient wholeset
                          , EnabledAnalysis TriangleCount wholeset
                          , EnabledAnalysis VertexDegree wholeset)
-
-
                       => Analysis (ClusteringCoefficient :. TriangleCount :. VertexDegree :. Nil) wholeset
 clusteringCoefficient = derivedAnalysis triangleCount ClusteringCoefficient $ \cc from to -> do
 	let update index = do
