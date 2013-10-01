@@ -23,3 +23,14 @@ Executable TriangleCountTest
                        GraphHammer >= 0.3
   ghc-options: -rtsopts -threaded -O3
 
+
+Executable ClusteringCoefficientTest
+  hs-source-dirs:      src
+  Main-is:             ClusteringCoefficientTest.hs
+  Build-depends:       base >= 3.0,
+                       containers >= 0.3,
+                       mtl >= 1.1,
+                       array >= 0.3,
+                       Graph500 >= 0.3,
+                       GraphHammer >= 0.3
+  ghc-options: -rtsopts -threaded -O3
