@@ -53,22 +53,14 @@ module GraphHammer.SimplestParallel(
 	) where
 
 import Control.Concurrent
-import Control.Concurrent.Chan
---import Control.Concurrent.STM.TChan
 import Control.Monad
 import Control.Monad.State
-import Control.Monad.STM
 import Data.Array
 import Data.Array.IO
 import qualified Data.Array.Unboxed as UA
 import Data.Bits
 import Data.Int
-import Data.IORef
-import Data.List (intersperse, sort)
-import Data.Maybe (fromMaybe, catMaybes)
---import qualified Data.Map as Map
-import qualified Data.Set as Set
-import Data.Word
+import Data.List (sort)
 import System.IO
 import System.Mem (performGC)
 import System.Time
@@ -78,8 +70,6 @@ import GraphHammer.HList
 
 import qualified GraphHammer.IntSet as ISet
 import qualified GraphHammer.IntMap as IMap
-
-import Debug.Trace
 
 -------------------------------------------------------------------------------
 -- A (already not) very simple representation.
@@ -97,7 +87,7 @@ analysisSliceSizeMask = analysisSliceSize - 1
 type IntMap a = IMap.IntMap a 
 type IntSet = ISet.IntSet
 
-type IndexSet = Set.Set Index
+-- type IndexSet = Set.Set Index
 
 type VertexAnalyses = IntMap Int64
 type AnalysesMap = IntMap VertexAnalyses
@@ -116,14 +106,14 @@ type EdgeSet = IntMap VertexSet
 data GraphHammer as = GraphHammer {
 	  graphHammerMaxNodes		:: !Int
 	, graphHammerNodeIndex		:: !Int
-	, graphHammerBatchCounter	:: !Int
+	, _graphHammerBatchCounter	:: !Int
 	, graphHammerEdges			:: !EdgeSet
 	-- Results of analyses.
 	, graphHammerAnalyses		:: !AnalysesArrays
 	-- Nodes affected in current batch.
 	, graphHammerNodesAffected	:: !IntSet
 	-- what analyses were changed in affected nodes.
-	, graphHammerAnalysesAffected	:: !(IntMap Int)
+	, _graphHammerAnalysesAffected	:: !(IntMap Int)
 	, graphHammerChannels	    	:: !(Array Int32 (Chan (Msg as)))
 	, graphHammerSendReceiveChannel	:: !(Chan SendReceive)
 	-- added per portion.
@@ -148,37 +138,46 @@ data Vertex = Vertex { vertexNode, vertexIndex :: !Int32 }
 -- vertex set is a map from node to a set of local indices.
 type VertexSet = IntMap IntSet
 
+vertexSetEmpty :: forall a. IMap.IntMap a
 vertexSetEmpty = IMap.empty
 
+vertexSetIntersection :: IMap.IntMap ISet.IntSet
+                      -> IMap.IntMap ISet.IntSet -> IMap.IntMap ISet.IntSet
 vertexSetIntersection a b = IMap.filter (not . ISet.null) $
 	IMap.intersectionWith (ISet.intersection) a b
 
+vertexSetUnion :: IMap.IntMap ISet.IntSet
+                        -> IMap.IntMap ISet.IntSet -> IMap.IntMap ISet.IntSet
 vertexSetUnion a b = IMap.unionWith (ISet.union) a b
 
 vertexSetToList :: VertexSet -> [Vertex]
 vertexSetToList set = concatMap (\(n,iset) -> map (Vertex n) $ ISet.toList iset) $
 	IMap.toList set
 
+vertexToIndex :: (Integral b, Num a) => b -> Vertex -> a
 vertexToIndex maxNodes vertex = fromIntegral (vertexNode vertex) +
 	fromIntegral maxNodes * fromIntegral (vertexIndex vertex)
 
-indexToVertex maxNodes index = Vertex (fromIntegral nodeIndex) (fromIntegral localIndex)
-	where
-		(localIndex,nodeIndex) = divMod index (fromIntegral maxNodes)
+indexToVertex :: (Integral b, Integral a) => a -> b -> Vertex
+indexToVertex maxNodes idx = Vertex (fromIntegral nodeIndex) (fromIntegral localIndex)
+  where
+    (localIndex,nodeIndex) = divMod idx (fromIntegral maxNodes)
 
 vertexSetMember :: Vertex -> VertexSet -> Bool
-vertexSetMember vertex set = case IMap.lookup (vertexNode vertex) set of
-	Just set -> ISet.member (vertexIndex vertex) set
+vertexSetMember vertex set' = case IMap.lookup (vertexNode vertex) set' of
+	Just set'' -> ISet.member (vertexIndex vertex) set''
 	Nothing -> False
 
+{-
 vertexSetInsert :: Vertex -> VertexSet -> VertexSet
-vertexSetInsert (Vertex node index) vset = IMap.insertWith ISet.union node (ISet.singleton index) vset
+vertexSetInsert (Vertex node idx) vset = IMap.insertWith ISet.union node (ISet.singleton idx) vset
+-}
 
 vertexSetSingleton :: Vertex -> VertexSet
-vertexSetSingleton (Vertex node index) = IMap.singleton node (ISet.singleton index)
+vertexSetSingleton (Vertex node idx) = IMap.singleton node (ISet.singleton idx)
 
 vertexSetSize :: VertexSet -> Int
-vertexSetSize set = IMap.fold (+) 0 $ IMap.map ISet.size set
+vertexSetSize set' = IMap.fold (+) 0 $ IMap.map ISet.size set'
 
 -------------------------------------------------------------------------------
 -- Main GraphHammer API.
@@ -265,9 +264,9 @@ graphHammerCommitNewPortion = do
             }
 
 graphHammerSplitIndex :: Index -> GraphHammerM as Vertex
-graphHammerSplitIndex index = do
+graphHammerSplitIndex idx = do
 	maxNodes <- liftM graphHammerMaxNodes get
-	return $ indexToVertex maxNodes index
+	return $ indexToVertex maxNodes idx
 
 graphHammerVertexSetIntersection :: VertexSet -> VertexSet -> GraphHammerM as VertexSet
 graphHammerVertexSetIntersection s1 s2 = return $ vertexSetIntersection s1 s2
@@ -317,14 +316,14 @@ graphHammerGrowAnalysisArrays newMaxIndex = do
 	modify $! \st -> st { graphHammerAnalyses = array (lowA, highA) analyses' }
 
 graphHammerGetAnalysisArrayIndex :: Int32 -> Int32 -> GraphHammerM as (Int32,IOUArray Int32 Int64)
-graphHammerGetAnalysisArrayIndex analysisIndex localIndex = do
+graphHammerGetAnalysisArrayIndex analysisIndex' localIndex = do
 	let indexOfSlice = shiftR localIndex analysisSliceSizeShift
-	analysisArrays <- liftM ((! analysisIndex) . graphHammerAnalyses) get
+	analysisArrays <- liftM ((! analysisIndex') . graphHammerAnalyses) get
 	let (_,highestIndex) = bounds analysisArrays
 	if highestIndex < indexOfSlice
 		then do
 			graphHammerGrowAnalysisArrays (fromIntegral indexOfSlice)
-			graphHammerGetAnalysisArrayIndex analysisIndex localIndex
+			graphHammerGetAnalysisArrayIndex analysisIndex' localIndex
 		else do
 			let sliceArray = analysisArrays ! indexOfSlice
 			return (localIndex .&. fromIntegral analysisSliceSizeMask, sliceArray)
@@ -344,7 +343,7 @@ graphHammerSetAnalysis analysisIndex index value = do
 	liftIO $ writeArray sliceArray sliceIndex value
 
 graphHammerIncrementAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
-graphHammerIncrementAnalysis analysisIndex index 0 = return ()	-- cheap no-op.
+graphHammerIncrementAnalysis _analysisIndex _index 0 = return ()	-- cheap no-op.
 graphHammerIncrementAnalysis analysisIndex index incr = do
 	local <- graphHammerIndexToLocal index
 	isLocal <- graphHammerLocalIndex index
@@ -617,8 +616,7 @@ runAnalysesStack threshold maxNodes receiveChanges analysesStack
 --			gatherDumpAffected chans
 		performInsertionAndAnalyses edgeList = do
 			insertAndAnalyzeSimpleSequential analysesStack edgeList
-
-runAnalysesStack threshold maxNodes receiveChanges analysesStack = do
+runAnalysesStack _threshold _maxNodes _receiveChanges _analysesStack = do
 	error "Non-parallelizable analyses aren't supported."
 
 -- |Messages the worker thread can receive.
@@ -827,11 +825,11 @@ instance Show (AnStatement as) where
 		("onEdges "++show vertex++"\\"++show var) : indentShowStats stats
 	show (ASOnEdgesIntersection a b aN bN stats) = unlines $
 		("onEdgesIntersection "++show (a,b)++"\\"++show (aN,bN)) : indentShowStats stats
-	show (ASAtomicIncr ai index incr) = "analysisResult["++show ai++"]["++show index++"] += "++show incr
+	show (ASAtomicIncr ai idx incr) = "analysisResult["++show ai++"]["++show idx++"] += "++show incr
 	show (ASIf cond thens elses) = unlines $
 			("if "++show cond) : "then" : indentShowStats thens ++ ("else" : map indentShow elses)
-	show (ASSetAnalysisResult ai index val) = "analysisResult["++show ai++"]["++show index++"] := "++show val
-	show (ASFlagVertex index) = "flagVertex "++show index
+	show (ASSetAnalysisResult ai idx val) = "analysisResult["++show ai++"]["++show idx++"] := "++show val
+	show (ASFlagVertex idx) = "flagVertex "++show idx
 	show (ASOnFlaggedVertices x ss) = unlines $ ("onFlaggedVertices \\"++show x ++" ->") : indentShowStats ss
 	showList xs = \s -> s ++ unlines (map show xs)
 
@@ -872,16 +870,19 @@ onEdges vertex act = do
 -------------------------------------------------------------------------------
 -- Analysis API - flagging vertices and iterating over them.
 
+{-
 flagVertex :: Value any Index -> AnM as ()
 flagVertex vertex = do
 	addStatement $ ASFlagVertex vertex
-
+-}
+{-
 onFlaggedVertices :: (Value Composed Index -> AnM as r) -> AnM as r
 onFlaggedVertices action = do
 	vertex <- defineLocal
 	(eStats, r) <- cutStatements $ action $ ValueComposed vertex
 	addStatement $ ASOnFlaggedVertices vertex eStats
 	return r
+-}
 
 -------------------------------------------------------------------------------
 -- Analysis API - conditional operator.
@@ -907,20 +908,20 @@ getAnalysisIndex a = do
 -- |Fetch analysis result.
 getAnalysisResult :: (AnalysisIndex a as) => a -> Value _a Index -> AnM as (Value Composed Int64)
 getAnalysisResult analysis vertex = do
-	index <- getAnalysisIndex analysis
-	return $ ValueComposed $ ValueAnalysisResult index vertex
+	idx <- getAnalysisIndex analysis
+	return $ ValueComposed $ ValueAnalysisResult idx vertex
 
 -- |Store analysis result.
 putAnalysisResult :: (AnalysisIndex a as) => a -> Value _a Index -> Value _b Int64 -> AnM as ()
 putAnalysisResult analysis vertex value = do
-	index <- getAnalysisIndex analysis
-	addStatement $ ASSetAnalysisResult index vertex value
+	idx <- getAnalysisIndex analysis
+	addStatement $ ASSetAnalysisResult idx vertex value
 
 -- |Update atomically result with increment.
 incrementAnalysisResult :: (AnalysisIndex a as) => a -> Value _a Index -> Value _b Int64 -> AnM as ()
 incrementAnalysisResult analysis vertex incr = do
-	index <- getAnalysisIndex analysis
-	addStatement $ ASAtomicIncr index vertex incr
+	idx <- getAnalysisIndex analysis
+	addStatement $ ASAtomicIncr idx vertex incr
 
 -------------------------------------------------------------------------------
 -- GraphHammer API - values and expressions.
@@ -959,10 +960,10 @@ instance Show v => Show (Value asgn v) where
 	show v = case v of
 		ValueArgument i -> "arg_"++show i
 		ValueLocal i -> "var_"++show i
-		ValueConst v -> show v
+		ValueConst w -> show w
 		ValueBin op a b -> unwords ["(",show a,")", show op, "(",show b,")"]
-		ValueUn op a -> "unary"
-		ValueComposed v -> unwords ["as_composed(",show v,")"]
+		ValueUn _op _a -> "unary"
+		ValueComposed w -> unwords ["as_composed(",show w,")"]
 		ValueAnalysisResult i ix -> "analysis "++show i++" result at "++show ix
 
 instance Show (BinOp x y z) where
@@ -991,7 +992,7 @@ localValue def = do
 	return v
 
 infixl 6 +., -.
-(+.), (-.) :: (Show v, Num v) => Value _a v -> Value _b v -> Value Composed v
+(+.), (-.), (*.) :: (Show v, Num v) => Value _a v -> Value _b v -> Value Composed v
 a +. b = ValueBin Plus a b
 a -. b = ValueBin Minus a b
 a *. b = ValueBin Mul a b
@@ -1001,8 +1002,9 @@ divV a b = ValueBin Div a b
 a === b = ValueBin Equal a b
 a =/= b = notV $ a === b
 
+notV :: forall _a. Value _a Bool -> Value Composed Bool
 notV = ValueUn Not
-negV = ValueUn Negate
+-- negV = ValueUn Negate
 
 cst :: v -> Value Composed v
 cst = ValueConst
@@ -1052,12 +1054,8 @@ interpretStatement stat = case stat of
 		interpretOnEdges startVertex vertexToAssign stats
 	ASAtomicIncr aIndex vIndex incr -> do
 		incr <- interpretValue incr
-		vIndex <- interpretValue vIndex
-{-
-		thisNode <- lift graphHammerCurrentNodeIndex
-		liftIO $ putStrLn $ "thisNode "++show thisNode++", incrementing analysis["++show aIndex++"]["++show vIndex++"] by "++show incr
----}
-		lift $ graphHammerIncrementAnalysis aIndex vIndex incr
+		vIndex' <- interpretValue vIndex
+		lift $ graphHammerIncrementAnalysis aIndex vIndex' incr
 	ASIf cond thenStats elseStats -> do
 		c <- interpretValue cond
 		let stats = if c then thenStats else elseStats
@@ -1066,10 +1064,6 @@ interpretStatement stat = case stat of
 		ei <- liftM isEdgeIndex get
 		thisEdgeSet <- lift $ graphHammerGetEdgeSet ei thisNodeVertex
 		isection <- lift $ graphHammerVertexSetIntersectionAsIndices edgeSet thisEdgeSet
-{-
-		thisNode <- lift graphHammerCurrentNodeIndex
-		liftIO $ putStrLn $ "thisNode "++show thisNode++", ei "++show ei++", edgeSet "++show edgeSet++", thisEdgeSet "++show thisEdgeSet++", isection "++show isection
----}
 		let cont c = ASAssign a (cst c) : ASAssign b (cst c) :
 			onEdgeStats
 		modify $! \st -> st { isConts = map cont isection ++ isConts st }
@@ -1084,10 +1078,9 @@ interpretStatement stat = case stat of
 		interpretIntersectionBulkOps av bv bulkStats
 
 assignValue :: Show v => Value Asgn v -> Value _b v -> AIM as ()
-assignValue (ValueLocal index) what = do
-	--liftIO $ putStrLn $ "assigning "++show index++" with "++show what
+assignValue (ValueLocal idx) what = do
 	x <- interpretValue what
-	modify $! \ist -> ist { istLocals = IMap.insert index (toInt64 x) $ istLocals ist }
+	modify $! \ist -> ist { istLocals = IMap.insert idx (toInt64 x) $ istLocals ist }
 
 interpretIntersectionBulkOps :: Value _a Index -> Value _b Index -> [BulkOp as] -> AIM as ()
 interpretIntersectionBulkOps a b ops = do
@@ -1119,15 +1112,10 @@ interpretIntersectionBulkOps a b ops = do
 			let sendSt = continueStat `seq` st { isConts = [continueStat] : isConts st }
 			lift $ graphHammerGroupContinuations destIndex $! sendSt
 			-- stop interpreting here. It will be continued on another node.
-			modify $! \st -> st { isConts = [] }
-{-
-			thisNode <- lift graphHammerCurrentNodeIndex
-			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
----}
-		
+			modify $! \st1 -> st1 { isConts = [] }
 
 interpretBulkOps :: VertexSet -> [BulkOp as] -> AIM as ()
-interpretBulkOps isection [] = return ()
+interpretBulkOps _isection [] = return ()
 interpretBulkOps isection (op:ops) = do
 	case op of
 		BulkIncr aindex _ _ incr -> do
@@ -1153,10 +1141,6 @@ interpretEdgesIntersection a b aN bN stats = do
 				ASAssign bN (cst c) :
 				stats
 			isection <- lift $ graphHammerVertexSetIntersectionAsIndices e1 e2
-{-
-			thisNode <- lift graphHammerCurrentNodeIndex
-			liftIO $ putStrLn $ "edge "++show (s1,s2)++", isection "++show isection++", e1 "++show e1++", e2 "++show e2
----}
 			let conts = map cont isection
 			modify $! \st -> st { isConts = conts ++ isConts st }
 		-- one is local to us, another is out of our reach.
@@ -1167,18 +1151,13 @@ interpretEdgesIntersection a b aN bN stats = do
 			ourEdges <- lift $ graphHammerGetEdgeSet ei s2
 			sendAndStop s1 s2 ourEdges
 	where
-		sendAndStop destIndex ourIndex ourEdges = do
+		sendAndStop destIndex _ourIndex ourEdges = do
 			st <- get
 			let continueStat = ASContinueEdgeIsect ourEdges aN bN destIndex stats
 			let sendSt = st { isConts = [continueStat] : isConts st }
 			lift $ graphHammerGroupContinuations destIndex sendSt
 			-- stop interpreting here. It will be continued on another node.
-			modify $! \st -> st { isConts = [] }
-{-
-			thisNode <- lift graphHammerCurrentNodeIndex
-			liftIO $ putStrLn $ "thisNode "++show thisNode++", destIndex "++show destIndex++", ourEdges "++show ourEdges++", ourIndex "++show ourIndex
----}
-
+			modify $! \st1 -> st1 { isConts = [] }
 
 interpretOnEdges :: EnabledAnalyses as as => Value _a Index -> Value Asgn Index -> AnStatList as -> AIM as ()
 
@@ -1190,30 +1169,17 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 	, (i1 == i3 && i2 == i4) || (i1 == i4 && i2 == i3) =
 		interpretEdgesIntersection startVertex1 startVertex2 vertexToAssign1 vertexToAssign2 thenStats
 
-interpretOnEdges startVertex vertexToAssign stats = do
+interpretOnEdges _startVertex _vertexToAssign _stats = do
 	error "standalone onEdges is not supported right now!"
-{-
-	start <- interpretValue startVertex
-	edges <- lift $ graphHammerGetEdges start
-	forM_ edges $ \edge -> do
-		assignValue vertexToAssign $ cst edge
-		interpretStatements stats
--}
-
-interpretEdgeIntersectionEnumeration :: EnabledAnalyses as as =>
-	Value Asgn Index -> Value Asgn Index -> VertexSet -> AnStatList as -> AIM as ()
-interpretEdgeIntersectionEnumeration v1 v2 isection thenStats = do
-	error "interpretEdgeIntersectionEnumeration"
-
 
 interpretValue :: Value _a v -> AIM as v
 interpretValue value = case value of
-	ValueLocal index -> do
+	ValueLocal index1 -> do
 		locals <- liftM istLocals get
-		case IMap.lookup index locals of
+		case IMap.lookup index1 locals of
 			Just v -> return (fromInt64 v)
-			Nothing -> error $ "local variable #"++show index++" not found in "++show locals++"."
-	ValueArgument index -> error "interpreting ValueArgument!!!"
+			Nothing -> error $ "local variable #"++show index1++" not found in "++show locals++"."
+	ValueArgument _index -> error "interpreting ValueArgument!!!"
 	ValueConst v -> return v
 	ValueBin Plus l r -> interpretBin (+) l r
 	ValueBin Minus l r -> interpretBin (-) l r
@@ -1223,9 +1189,9 @@ interpretValue value = case value of
 	ValueUn Not val -> liftM not $ interpretValue val
 	ValueUn Negate val -> liftM negate $ interpretValue val
 	ValueComposed v -> interpretValue v
-	ValueAnalysisResult analysisIndex vertex -> do
+	ValueAnalysisResult analysisIndex1 vertex -> do
 		v <- interpretValue vertex
-		lift $ graphHammerGetAnalysis analysisIndex v
+		lift $ graphHammerGetAnalysis analysisIndex1 v
 	where
 		interpretBin :: (a -> b -> r) -> Value _a a -> Value _b b -> AIM as r
 		interpretBin f a b = liftM2 f (interpretValue a) (interpretValue b)
@@ -1269,18 +1235,18 @@ optimizeIntersection stat@(ASOnEdgesIntersection a b aN bN stats) = case stats o
 	_ -> [stat]
 	where
 		uncomposeOne :: Int32 -> Value _a x -> Value _b x -> Maybe (Value Composed x)
-		uncomposeOne rq a b = do
-				i <- uncompose a
-				if i == rq then return (castComposed b) else mzero
+		uncomposeOne rq a1 b1 = do
+				i <- uncompose a1
+				if i == rq then return (castComposed b1) else mzero
 			`mplus` do
-				i <- uncompose b
-				if i == rq then return (castComposed a) else mzero
+				i <- uncompose b1
+				if i == rq then return (castComposed a1) else mzero
 		castComposed :: Value _a a -> Value Composed a
 		castComposed (ValueComposed v) = ValueComposed v
 		castComposed (ValueConst c) = ValueConst c
 		castComposed v = ValueComposed v
 		incrIsConst :: Value _a c -> Bool
-		incrIsConst (ValueConst c) = True
+		incrIsConst (ValueConst _c) = True
 		incrIsConst _ = False
 optimizeIntersection _ = error "Not an intersection interation operator."
 
@@ -1291,7 +1257,7 @@ uncompose _ = Nothing
 
 recognizeIntersection :: AnStatement as -> Maybe (AnStatement as)
 recognizeIntersection (ASOnEdges a aN [ASOnEdges b bN [ASIf cond stats []]]) = do
-	case cond of
+	_ <- case cond of
 		ValueBin Equal x y -> do
 			ix <- uncompose x
 			iy <- uncompose y
@@ -1309,18 +1275,11 @@ recognizeIntersection _ = mzero
 
 type family RequiredAnalyses a
 
-data AnalysisNotEnabled a
+-- Removed for feature use
+-- data AnalysisNotEnabled a
 
 class EnabledAnalysis a as
 
-{-
-
-class EnabledBool b a as
-instance TyCast TRUE b => EnabledBool b  a (a  :. as)
-instance (EnabledAnalysis a as) => EnabledBool FALSE a (a' :. as)
-
-instance (EnabledBool b a (a' :. as), TyEq b a a') => EnabledAnalysis a (a' :. as)
--}
 instance EnabledAnalysis a (a :. as)
 instance EnabledAnalysis a as => EnabledAnalysis a (a' :. as)
 
@@ -1342,33 +1301,35 @@ basicAnalysis analysis edgeInsert =
 		i = asValueIndex env
 		stats = optimizeStatements $ asStatements env
 		((sv,ev),env) = flip runState (AnSt 0 []) $ do
-			sv <- defineLocal
-			ev <- defineLocal
-			edgeInsert analysis (ValueComposed sv) (ValueComposed ev)
-			return (sv,ev)
+			sv1 <- defineLocal
+			ev1 <- defineLocal
+			edgeInsert analysis (ValueComposed sv1) (ValueComposed ev1)
+			return (sv1,ev1)
 
 derivedAnalysis :: (EnabledAnalyses (RequiredAnalyses a) as, EnabledAnalyses as wholeset, EnabledAnalyses (a :. as) wholeset)  =>
-	Analysis as wholeset -> a -> (a -> Value Composed Index -> Value Composed Index -> AnM (a :. as) ()) -> Analysis (a :. as) wholeset
+                Analysis as wholeset -> a -> (a -> Value Composed Index -> Value Composed Index -> AnM (a :. as) ()) -> Analysis (a :. as) wholeset
 derivedAnalysis (Analysis startV endV startI requiredActions) analysis edgeInsert =
-	Analysis startV endV i (map liftStatement requiredActions ++ currentActions)
-	where
-		initialState = AnSt startI []
-		liftStatement :: AnStatement as -> AnStatement (a :. as)
-		liftStatement stat = case stat of
-			ASAssign v e -> ASAssign v e
-			ASOnEdges i arg as -> ASOnEdges i arg (map liftStatement as)
-			ASAtomicIncr ai vi incr -> ASAtomicIncr ai vi incr
-			ASIf cond thens elses -> ASIf cond (map liftStatement thens) (map liftStatement elses)
-			ASSetAnalysisResult ai vi val -> ASSetAnalysisResult ai vi val
-			ASFlagVertex v -> ASFlagVertex v
-			ASOnFlaggedVertices arg stats -> ASOnFlaggedVertices arg $ map liftStatement stats
-
-		currentActions = optimizeStatements $ asStatements env
-		i = asValueIndex env
-		env = flip execState initialState $ do
-			edgeInsert analysis (ValueComposed startV) (ValueComposed endV)
-
-
+    Analysis startV endV i (map liftStatement requiredActions ++ currentActions)
+  where
+    initialState = AnSt startI []
+    liftStatement :: AnStatement as -> AnStatement (a :. as)
+    liftStatement stat = case stat of
+        ASAssign v e -> ASAssign v e
+        ASOnEdges i1 arg as -> ASOnEdges i1 arg (map liftStatement as)
+        ASAtomicIncr ai vi incr -> ASAtomicIncr ai vi incr
+        ASIf cond thens elses -> ASIf cond (map liftStatement thens) (map liftStatement elses)
+        ASSetAnalysisResult ai vi val -> ASSetAnalysisResult ai vi val
+        ASFlagVertex v -> ASFlagVertex v
+        ASOnFlaggedVertices arg stats -> ASOnFlaggedVertices arg $ map liftStatement stats
+        -- new ones
+        ASOnEdgesIntersection va vb ai bi stats -> ASOnEdgesIntersection va vb ai bi $ map liftStatement stats
+--        ASIntersectionBulkOps va vb ops -> ASIntersectionBulkOps va vb ops
+        ASContinueEdgeIsect vs ai bi v stat -> ASContinueEdgeIsect vs ai bi b $ map liftStatements stats
+--        ASContinueEdgeIsectBulk _ _ _
+    currentActions = optimizeStatements $ asStatements env
+    i = asValueIndex env
+    env = flip execState initialState $ do
+            edgeInsert analysis (ValueComposed startV) (ValueComposed endV)
 
 class EnabledAnalysis a as => AnalysisIndex a as where
 	analysisIndex :: a -> as -> Int

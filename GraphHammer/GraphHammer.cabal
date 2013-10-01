@@ -39,4 +39,4 @@ Library
   Other-modules:       GraphHammer.IntSet, GraphHammer.IntMap
 
   -- Build-tools:
-  ghc-options: -O3
+  ghc-options: -O3 -Wall
