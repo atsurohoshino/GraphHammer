@@ -1,11 +1,15 @@
 Name:                GraphHammer
 Version:             0.3
 Synopsis:            GraphHammer Haskell graph analyses framework inspired by STINGER.
--- Description:
+Description:
+  GraphHammer is a graph analyses framework.
+  See "GraphHammer.SimplestParallel" for library documentation, and 
+  "GraphHammer.VertexDegree", "GraphHammer.TriangleCount", "GraphHammer.ClusteringCoefficients"
+  for examples.
 License:             GPL-2
 License-file:        LICENSE
 Author:              serguey.zefirov@parsci.com
-Maintainer:          serguey.zefirov@parsci.com
+Maintainer:          alexander.vershilov@parsci.com
 Copyright:           2013, Parallel Scientific Labs, LLC
 Category:            Concurrency
 Build-type:          Simple

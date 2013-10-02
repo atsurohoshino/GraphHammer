@@ -181,13 +181,9 @@ vertexSetSize set' = IMap.fold (+) 0 $ IMap.map ISet.size set'
 -------------------------------------------------------------------------------
 -- Main GraphHammer API.
 
--- |Create a GraphHammer structure for parallel GraphHammer processing.
--- Usage: 
--- @@
--- gh <- graphHammerNew maxJobNodes thisNodeIndex
--- @@
+-- | Create a GraphHammer structure for parallel GraphHammer processing.
 graphHammerNew :: HLength as 
-               => Int -- ^ max job nodes
+               => Int -- ^ Max job nodes
                -> Int -- ^ Node index
                -> Chan SendReceive 
                -> Array Int32 (Chan (Msg as)) 
@@ -509,11 +505,13 @@ graphHammerClearAffected = modify $! \st -> st { graphHammerNodesAffected = ISet
 -- Code that runs the analytics.
 
 -- |Run the analyses stack.
--- Its' parameters:
---  - function to obtain edges to insert.
---  - a stack of analyses to perform.
-runAnalysesStack :: (HLength as, EnabledAnalyses as as) => Integer -> Int -> IO (Maybe (UA.UArray Int Index)) ->
-	Analysis as as -> IO ()
+-- at this momemt it's possible to run only parallelizable analyses.
+runAnalysesStack :: (HLength as, EnabledAnalyses as as) 
+                 => Integer 
+                 -> Int                               -- ^ Max number of nodes
+                 -> IO (Maybe (UA.UArray Int Index))  -- ^ Function to obtain edges to insert
+                 -> Analysis as as                    -- ^ A stack of analyses to perform
+                 -> IO ()
 runAnalysesStack threshold maxNodes receiveChanges analysesStack
 	| analysesParallelizable analysesStack = do
 	putStrLn $ "Max nodes "++show maxNodes
@@ -1005,6 +1003,7 @@ notV :: forall _a. Value _a Bool -> Value Composed Bool
 notV = ValueUn Not
 -- negV = ValueUn Negate
 
+-- | Constant value
 cst :: v -> Value Composed v
 cst = ValueConst
 
