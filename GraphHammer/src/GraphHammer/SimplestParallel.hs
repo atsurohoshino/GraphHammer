@@ -60,9 +60,9 @@ import qualified Data.Array.Unboxed as UA
 import Data.Bits
 import Data.Int
 import Data.List (sort)
+import Data.Time.Clock ( getCurrentTime, diffUTCTime )
 import System.IO
 import System.Mem (performGC)
-import System.Time
 
 import G500.Index
 import GraphHammer.HList
@@ -519,28 +519,23 @@ runAnalysesStack threshold maxNodes receiveChanges analysesStack
 	sendReceiveCountChan <- newChan
 	forM_ [0..maxNodes-1] $ \n -> do
 		forkIO $ workerThread analysesStack maxNodes n sendReceiveCountChan chans
-	startTime <- getClockTime
-	(computationPicosecs,lastCompPicosecs,lastCompCount, n) <-
+	startTime <- getCurrentTime
+	(computationSeconds,lastCompSeconds,lastCompCount, n) <-
 		runLoop 0 0 sendReceiveCountChan chans 0 0
-	endTime <- getClockTime
-	let timeDiff = diffClockTimes endTime startTime
+	endTime <- getCurrentTime
+	let timeDiff = diffUTCTime endTime startTime
 	let picoSecs = 1000000000000
-	let diffPicoSecs = fromIntegral (tdSec timeDiff) * picoSecs + fromIntegral (tdPicosec timeDiff)
-	let edgesPerSecond = fromIntegral n * picoSecs / diffPicoSecs
+--	let diffPicoSecs = fromIntegral (tdSec timeDiff) * picoSecs + fromIntegral (tdPicosec timeDiff)
+	let edgesPerSecond = fromIntegral n / timeDiff
 	putStrLn $ "Edges: "++show n
 	putStrLn $ "Edges per second for total time: "++show edgesPerSecond
-	putStrLn $ "Total time in seconds: "++show (diffPicoSecs / picoSecs)
-	let computationSeconds = fromIntegral computationPicosecs / picoSecs
+	putStrLn $ "Total time in seconds: "++show timeDiff
 	putStrLn $ "Edges per second for computation time: "++show (fromIntegral n / computationSeconds)
-	let lastCompSeconds = fromIntegral lastCompPicosecs / picoSecs
 	putStrLn $ "Edges per second for computation time of last "++show lastCompCount++" edges: "++show (fromIntegral lastCompCount / lastCompSeconds)
 	putStrLn $ "Computation time in seconds: "++show computationSeconds
 	return ()
 	where
 		gcThreshold = threshold - 8000
-		getClockPicoseconds = do
-			(TOD seconds picoseconds) <- getClockTime
-			return $ seconds * 1000000000000 + picoseconds
 		pairs (x:y:xys) = (x,y) : pairs xys
 		pairs _ = []
 		runLoop time lastEdgesTime sendReceiveCountChan chans pn n = do
@@ -555,7 +550,7 @@ runAnalysesStack threshold maxNodes receiveChanges analysesStack
 							readChan answer
 					return (time,lastEdgesTime,n-threshold,n)
 				Just edges -> do
-					start <- getClockPicoseconds
+					start <- getCurrentTime
 					let (low,up) = UA.bounds edges
 					let count = div (up-low+1) 2
 					if n >= gcThreshold && n < gcThreshold + fromIntegral count
@@ -565,14 +560,12 @@ runAnalysesStack threshold maxNodes receiveChanges analysesStack
 					-- seed the work.
 					forM_ (elems chans) $ \ch -> writeChan ch (Portion pn edges answer)
 					-- wait for answers.
---					putStrLn $ "Waiting for threads ("++show pn++")."
 					hFlush stdout
 					forM_ [0..maxNodes-1] $ \_ -> 
 						readChan answer
 					detectSilenceAndDumpState sendReceiveCountChan maxNodes (elems chans)
---					putStrLn $ "Done waiting ("++show pn++")."
-					end <- getClockPicoseconds
-					let delta = end - start
+					end <- getCurrentTime 
+					let delta = diffUTCTime end start
 					let compTime = time + delta
 					let lastEdgesTime'
 						| n >= threshold = lastEdgesTime + delta
