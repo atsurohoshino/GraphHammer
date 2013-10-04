@@ -2,7 +2,7 @@
 -- Copyright : (C) 2013 Parallel Scientific Labs, LLC.
 -- License   : GPLv2
 --
--- Testing STINGER analyses.
+-- Testing GraphHammer analyses.
 --
 
 {-# LANGUAGE PatternGuards #-}
@@ -56,26 +56,26 @@ testDataReading fname batchSize = do
 -------------------------------------------------------------------------------
 -- Reading the arguments.
 
-data STINGERArgs = SArgs {
+data GHammerArgs = GArgs {
 	  saBatchSize		:: Int
 	, saNodes		:: Int
 	, saProcesses		:: Int
 	}
 
-readArguments :: IO (String, STINGERArgs)
+readArguments :: IO (String, GHammerArgs)
 readArguments = do
 	args <- getArgs
 	putStrLn $ "Arguments: "++show args
 	case runStateT parseArgs args of
 		Nothing -> do
 			putStrLn $ unlines [
-				  "usage: TriangleCountTest -fname=<filename> [stinger arguments]"
-				, "STINGER arguments are:"
+				  "usage: TriangleCountTest -fname=<filename> [gHammer arguments]"
+				, "gHammer arguments are:"
 				, "    -batch=<batch size>, default 1000"
 				, "    -nodes=<nodes count>, default 1"
 				, "    -processes=<processes per node>, default 1"
-				, "As STINGER arguments all have defaults, they can be omitted."
-				, "Default values will make STINGER work sequentially."
+				, "As gHammer arguments all have defaults, they can be omitted."
+				, "Default values will make GraphHammer work sequentially."
 				]
 			exitFailure
 		Just (result,_) -> return result
@@ -97,7 +97,7 @@ intOpt opt = do
 intDefOpt def opt = intOpt opt `mplus` return def
 
 speedMeasurementArgs = do
-	sa <- stingerArgs
+	sa <- gHammerArgs
 	[] <- get
 	return sa
 
@@ -108,8 +108,8 @@ filenameOpt = do
 parseArgs = do
 	liftM2 (,) filenameOpt speedMeasurementArgs
 
-stingerArgs = do
-	parseOpts $ SArgs 1000 1 1
+gHammerArgs = do
+	parseOpts $ GArgs 1000 1 1
 	where
 		parseOpts sa = do
 				sa' <- batch sa `mplus` nodes sa `mplus` processes sa
@@ -129,8 +129,8 @@ stingerArgs = do
 -- Running the test.
 
 main = do
-	(fn, stingerArgs) <- readArguments
-	(threshold, gen) <- testDataReading fn (saBatchSize stingerArgs)
-	let maxNodes = saNodes stingerArgs
+	(fn, gHammerArgs) <- readArguments
+	(threshold, gen) <- testDataReading fn (saBatchSize gHammerArgs)
+	let maxNodes = saNodes gHammerArgs
 	runAnalysesStack threshold maxNodes gen triangleCount
 
