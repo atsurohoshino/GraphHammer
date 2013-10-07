@@ -19,7 +19,7 @@ module GraphHammer.Simplest(
 	-- representation exported abstractly
 	, GraphHammer 
 	-- How to create a new GraphHammer.
-	, stingerNew
+	, gHammerNew
 
 	-- An analysis monad to create operations with GraphHammer.
 	, GraphHammerM
@@ -74,12 +74,12 @@ type IntSet = Set.IntSet
 
 -- |A representation parametrized by analyses required.
 data GraphHammer as = GraphHammer {
-	  stingerBatchCounter	:: !Int
-	, stingerEdges		:: !(IntMap IntSet)
+	  gHammerBatchCounter	:: !Int
+	, gHammerEdges		:: !(IntMap IntSet)
 	-- Results of analyses.
-	, stingerAnalyses	:: !(IntMap (IntMap Int64))
+	, gHammerAnalyses	:: !(IntMap (IntMap Int64))
 	-- Nodes affected in current batch.
-	, stingerNodesAffected	:: !IntSet
+	, gHammerNodesAffected	:: !IntSet
 	}
 
 -- |Monad to operate with GraphHammer.
@@ -89,81 +89,81 @@ type GraphHammerM as a = StateT (GraphHammer as) IO a
 -------------------------------------------------------------------------------
 -- Main GraphHammer API.
 
-stingerNew :: Index -> IO (GraphHammer as)
-stingerNew maxVertices = do
+gHammerNew :: Index -> IO (GraphHammer as)
+gHammerNew maxVertices = do
 	return $ GraphHammer 0 Map.empty Map.empty Set.empty
 
-stingerEdgeExists :: Index -> Index -> GraphHammerM as Bool
-stingerEdgeExists start end
+gHammerEdgeExists :: Index -> Index -> GraphHammerM as Bool
+gHammerEdgeExists start end
 	| start == end = return True
 	| otherwise = do
-	liftM (Set.member (fromIntegral end) . Map.findWithDefault Set.empty (fromIntegral start) . stingerEdges) get
+	liftM (Set.member (fromIntegral end) . Map.findWithDefault Set.empty (fromIntegral start) . gHammerEdges) get
 
-stingerInsertEdge :: Index -> Index -> GraphHammerM as ()
-stingerInsertEdge start end
+gHammerInsertEdge :: Index -> Index -> GraphHammerM as ()
+gHammerInsertEdge start end
 	| start == end = return ()
 	| otherwise = do
 		modify $! \st -> let
 				edges = Map.insertWith Set.union (fromIntegral start) (Set.singleton (fromIntegral end)) $
 					Map.insertWith Set.union (fromIntegral end) (Set.singleton (fromIntegral start)) $
-					stingerEdges st
+					gHammerEdges st
 			in edges `seq` st {
-			  stingerEdges = edges
-			, stingerNodesAffected = Set.insert (fromIntegral start) $ Set.insert (fromIntegral end) $
-				stingerNodesAffected st
+			  gHammerEdges = edges
+			, gHammerNodesAffected = Set.insert (fromIntegral start) $ Set.insert (fromIntegral end) $
+				gHammerNodesAffected st
 			}
 	
 
-stingerGetEdgeSet :: Index -> GraphHammerM as IntSet
-stingerGetEdgeSet start =
-	liftM (Map.findWithDefault Set.empty (fromIntegral start) . stingerEdges) get
+gHammerGetEdgeSet :: Index -> GraphHammerM as IntSet
+gHammerGetEdgeSet start =
+	liftM (Map.findWithDefault Set.empty (fromIntegral start) . gHammerEdges) get
 
-stingerGetEdges :: Index -> GraphHammerM as [Index]
-stingerGetEdges start =
-	liftM (map fromIntegral . Set.toList) $ stingerGetEdgeSet start
+gHammerGetEdges :: Index -> GraphHammerM as [Index]
+gHammerGetEdges start =
+	liftM (map fromIntegral . Set.toList) $ gHammerGetEdgeSet start
 
-stingerGetAnalysis :: Int -> Index -> GraphHammerM as Int64
-stingerGetAnalysis analysisIndex index = 
-	liftM (Map.findWithDefault 0 (fromIntegral analysisIndex) . Map.findWithDefault Map.empty (fromIntegral index) . stingerAnalyses) get
+gHammerGetAnalysis :: Int -> Index -> GraphHammerM as Int64
+gHammerGetAnalysis analysisIndex index =
+	liftM (Map.findWithDefault 0 (fromIntegral analysisIndex) . Map.findWithDefault Map.empty (fromIntegral index) . gHammerAnalyses) get
 
-stingerSetAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
-stingerSetAnalysis analysisIndex index' value = do
+gHammerSetAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
+gHammerSetAnalysis analysisIndex index' value = do
 	let index = fromIntegral index'
 	modify $! \st -> let
 			analyses = Map.insertWith Map.union index (Map.singleton (fromIntegral analysisIndex) value) $
-				stingerAnalyses st
+				gHammerAnalyses st
 		in analyses `seq` st {
-		  stingerAnalyses = analyses
-		, stingerNodesAffected = Set.insert index $ stingerNodesAffected st
+		  gHammerAnalyses = analyses
+		, gHammerNodesAffected = Set.insert index $ gHammerNodesAffected st
 		}
 
-stingerIncrementAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
-stingerIncrementAnalysis analysisIndex index' incr = do
+gHammerIncrementAnalysis :: Int -> Index -> Int64 -> GraphHammerM as ()
+gHammerIncrementAnalysis analysisIndex index' incr = do
 	let index = fromIntegral index'
 	modify $! \st -> let
 			analyses = Map.insertWith (Map.unionWith (\a b -> a `seq` b ` seq` a + b)) index (Map.singleton (fromIntegral analysisIndex) incr) $
-				stingerAnalyses st
+				gHammerAnalyses st
 		in analyses `seq` st {
-		  stingerAnalyses = analyses
-		, stingerNodesAffected = Set.insert index $ stingerNodesAffected st
+		  gHammerAnalyses = analyses
+		, gHammerNodesAffected = Set.insert index $ gHammerNodesAffected st
 		}
 
-stingerDumpState :: GraphHammerM as ()
-stingerDumpState = do
+gHammerDumpState :: GraphHammerM as ()
+gHammerDumpState = do
 	st <- get
-	let affected = Set.toList $ stingerNodesAffected st
+	let affected = Set.toList $ gHammerNodesAffected st
 	liftIO $ do
-		putStrLn $ "Batch "++show (stingerBatchCounter st)
+		putStrLn $ "Batch "++show (gHammerBatchCounter st)
 		forM_ (take 10 affected) $ \node -> do
 			putStrLn $ "Node "++show node
-			case Map.lookup node (stingerAnalyses st) of
+			case Map.lookup node (gHammerAnalyses st) of
 				Nothing -> return ()
 				Just analyses -> forM_ (Map.toList analyses) $ \(a,v) -> do
 					putStrLn $ "    Analysis "++show a++", value "++show v
 		hFlush stdout
 
-stingerClearAffected :: GraphHammerM as ()
-stingerClearAffected = modify $! \st -> st { stingerNodesAffected = Set.empty }
+gHammerClearAffected :: GraphHammerM as ()
+gHammerClearAffected = modify $! \st -> st { gHammerNodesAffected = Set.empty }
 
 -- |Run the analyses stack.
 -- Its' parameters:
@@ -172,7 +172,7 @@ stingerClearAffected = modify $! \st -> st { stingerNodesAffected = Set.empty }
 runAnalysesStack :: Index -> IO (Maybe (UArray Int Index)) ->
 	Analysis as as -> IO ()
 runAnalysesStack maxVertices receiveChanges analysesStack = do
-	s <- stingerNew maxVertices
+	s <- gHammerNew maxVertices
 	startTime <- getClockTime 
 	(n,_) <- (flip runStateT) s $ runLoop 0
 	endTime <- getClockTime
@@ -186,15 +186,15 @@ runAnalysesStack maxVertices receiveChanges analysesStack = do
 		pairs (x:y:xys) = (x,y) : pairs xys
 		pairs _ = []
 		runLoop n = do
-			modify $! \st -> st { stingerBatchCounter = stingerBatchCounter st + 1 }
+			modify $! \st -> st { gHammerBatchCounter = gHammerBatchCounter st + 1 }
 			edges <- liftIO receiveChanges
 			case edges of
 				Nothing -> return n
 				Just edges -> do
 					let es = pairs $ Data.Array.Unboxed.elems edges
-					stingerClearAffected
+					gHammerClearAffected
 					performInsertionAndAnalyses es
-					stingerDumpState
+					gHammerDumpState
 					runLoop (n+length es)
 		performInsertionAndAnalyses edgeList = do
 			insertAndAnalyzeSimpleSequential analysesStack edgeList
@@ -202,11 +202,11 @@ runAnalysesStack maxVertices receiveChanges analysesStack = do
 insertAndAnalyzeSimpleSequential :: Analysis as' as -> [(Index, Index)] -> GraphHammerM as ()
 insertAndAnalyzeSimpleSequential stack edges = do
 	forM_ edges $ \(start, end) -> do
-		exists <- stingerEdgeExists start end
+		exists <- gHammerEdgeExists start end
 		if exists then return ()
 			else do
 				runStack stack start end
-				stingerInsertEdge start end
+				gHammerInsertEdge start end
 
 runStack :: Analysis as' as -> Index -> Index -> GraphHammerM as ()
 runStack EmptyAnalysis _ _ = return ()
@@ -444,7 +444,7 @@ interpretStatement stat = case stat of
 	ASAtomicIncr aIndex vIndex incr -> do
 		incr <- interpretValue incr
 		vIndex <- interpretValue vIndex
-		lift $ stingerIncrementAnalysis aIndex vIndex incr
+		lift $ gHammerIncrementAnalysis aIndex vIndex incr
 	ASIf cond thenStats elseStats -> do
 		c <- interpretValue cond
 		interpretStatements $ if c then thenStats else elseStats
@@ -465,8 +465,8 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 	, (i1 == i3 && i2 == i4) || (i1 == i4 && i2 == i3) = do
 	s1 <- interpretValue startVertex1
 	s2 <- interpretValue startVertex2
-	e1 <- lift $ stingerGetEdgeSet s1
-	e2 <- lift $ stingerGetEdgeSet s2
+	e1 <- lift $ gHammerGetEdgeSet s1
+	e2 <- lift $ gHammerGetEdgeSet s2
 	forM_ (Set.toList (Set.intersection e1 e2)) $ \edge -> do
 		let c = cst $ fromIntegral edge
 		assignValue vertexToAssign1 c
@@ -480,7 +480,7 @@ interpretOnEdges startVertex1 vertexToAssign1@(ValueLocal i1)
 
 interpretOnEdges startVertex vertexToAssign stats = do
 	start <- interpretValue startVertex
-	edges <- lift $ stingerGetEdges start
+	edges <- lift $ gHammerGetEdges start
 	forM_ edges $ \edge -> do
 		assignValue vertexToAssign $ cst edge
 		interpretStatements stats
@@ -504,7 +504,7 @@ interpretValue value = case value of
 	ValueComposed v -> interpretValue v
 	ValueAnalysisResult analysisIndex vertex -> do
 		v <- interpretValue vertex
-		lift $ stingerGetAnalysis analysisIndex v
+		lift $ gHammerGetAnalysis analysisIndex v
 	where
 		interpretBin :: (a -> b -> r) -> Value _a a -> Value _b b -> AIM as r
 		interpretBin f a b = liftM2 f (interpretValue a) (interpretValue b)
