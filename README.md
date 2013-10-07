@@ -1,5 +1,5 @@
-GraphHammer
------------
+Introduction
+============
 
 The GraphHammer projects includes GraphHammer itself and test
 executables to run GraphHammer analyses.
@@ -7,4 +7,5 @@ executables to run GraphHammer analyses.
 GraphHammer is a library for running different analysis on a graph.
 It's designed to be used on a generic PC and clusters.
 
-Current version is a ready to be used prototype implementation.
+It is currently still a prototype implementation, but is ready to be
+used.
