@@ -1,5 +1,5 @@
 Triangle Count test
--------------------
+===================
 
 TriangleCountTest is a standalone program for GraphHammer
 implementation. It performs Triangle Count streaming analysis
